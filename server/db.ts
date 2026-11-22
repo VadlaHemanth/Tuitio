@@ -69,12 +69,19 @@ ensureBootstrapDefaults();
 // Password hashing using Node scrypt + timingSafeEqual
 export function hashPassword(password: string, salt?: string): { hash: string; salt: string } {
   const actualSalt = salt || crypto.randomBytes(16).toString('hex');
-  const derived = crypto.scryptSync(password, actualSalt, 64).toString('hex');
+  const derived = crypto.pbkdf2Sync(password, Buffer.from(actualSalt, 'hex'), 100000, 32, 'sha256').toString('hex');
   return { hash: derived, salt: actualSalt };
 }
 
 export function verifyPassword(password: string, storedHash: string, storedSalt: string): boolean {
-  const derived = crypto.scryptSync(password, storedSalt, 64);
+  let derived: Buffer;
+  if (storedHash.length === 64) {
+    // PBKDF2 (SHA-256, 100000 iterations, 32 bytes)
+    derived = crypto.pbkdf2Sync(password, Buffer.from(storedSalt, 'hex'), 100000, 32, 'sha256');
+  } else {
+    // legacy scrypt
+    derived = crypto.scryptSync(password, storedSalt, 64);
+  }
   const target = Buffer.from(storedHash, 'hex');
   if (derived.length !== target.length) return false;
   return crypto.timingSafeEqual(derived, target);

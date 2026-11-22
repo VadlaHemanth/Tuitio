@@ -13,8 +13,11 @@ command = "npm run build"
 
 [[d1_databases]]
 binding = "DB"
-database_name = "tuitio-db"
-database_id = "REPLACE_WITH_YOUR_D1_DATABASE_ID"
+database_name = "tuitio-db1"
+database_id = "beb50307-24cf-4881-9c47-5369bf3deb4c"
+
+[vars]
+SESSION_SECRET = "8f9b2d3c4e5a6b7c8d9e0f1a2b3c4d5e6f7a8b9c0d1e2f3a4b5c6d7e8f9a0b1c"
 
 [triggers]
 # Free plan allows up to 3 cron triggers per Worker.

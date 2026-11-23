@@ -22,5 +22,5 @@ database_id = "beb50307-24cf-4881-9c47-5369bf3deb4c"
 SESSION_SECRET = "8f9b2d3c4e5a6b7c8d9e0f1a2b3c4d5e6f7a8b9c0d1e2f3a4b5c6d7e8f9a0b1c"
 
 [triggers]
-# 5:30 PM IST sends fee alerts. 8:00 PM IST retries failed deliveries.
-crons = ["0 12 * * *", "30 14 * * *"]
+# 5:30 PM IST daily fee alerts and tuition prep.
+crons = ["0 12 * * *"]

@@ -4,7 +4,7 @@
 - **Cloudflare Workers**: 100,000 requests/day, 10 ms CPU/request, 128 MB RAM, free `*.workers.dev` subdomain.
 - **Cloudflare Workers Static Assets**: Up to 20,000 static files (25 MiB max/file) served free from the edge.
 - **Cloudflare D1 (SQLite)**: 5M rows read/day, 100,000 rows written/day, 5 GB total storage (500 MB per DB), 7-day Time Travel recovery.
-- **Cloudflare Cron Triggers**: Up to 3 triggers per Worker (2 used: 5:30 PM IST & 8:00 PM IST).
+- **Cloudflare Cron Triggers**: Tuitio uses one daily trigger at 5:30 PM IST for fee reminders and tuition prep.
 
 ## Step-by-Step Deployment
 1. Install Wrangler: `npm install -g wrangler` and authenticate: `wrangler login`.

@@ -81,6 +81,7 @@ export interface Student {
   id: string;
   studentCode: string;
   fullName: string;
+  nickname?: string;
   avatarColor: string;
   classLevel: ClassLevel;
   board: BoardType;

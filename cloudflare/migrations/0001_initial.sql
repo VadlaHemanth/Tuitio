@@ -32,6 +32,7 @@ CREATE TABLE IF NOT EXISTS students (
   id TEXT PRIMARY KEY,
   student_code TEXT NOT NULL UNIQUE,
   full_name TEXT NOT NULL,
+  nickname TEXT,
   avatar_color TEXT NOT NULL,
   class_level INTEGER NOT NULL CHECK (class_level BETWEEN 3 AND 10),
   board TEXT NOT NULL CHECK (board IN ('SSC', 'CBSE', 'ICSE')),

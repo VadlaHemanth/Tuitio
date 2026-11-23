@@ -418,7 +418,11 @@ export function evaluateFeeReminders(params: {
     let urgency: 'urgent' | 'high' | 'normal' = 'normal';
     let triggerTag = '';
 
-    if (daysFromDue === -reminderSettings.feeDaysBefore) {
+    if (daysFromDue === -1) {
+      reason = `Fee due tomorrow (${oldest.dueDate})`;
+      urgency = 'high';
+      triggerTag = 'before-1-day';
+    } else if (daysFromDue === -reminderSettings.feeDaysBefore) {
       reason = `Fee due in ${reminderSettings.feeDaysBefore} days`;
       urgency = 'normal';
       triggerTag = `before-${reminderSettings.feeDaysBefore}`;

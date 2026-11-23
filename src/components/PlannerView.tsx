@@ -365,7 +365,10 @@ export const PlannerView: React.FC<PlannerViewProps> = ({
         >
           <form onSubmit={handleSaveProgress} className="liquid-glass-strong w-full max-w-lg rounded-3xl p-6 space-y-4">
             <h3 className="text-lg font-bold text-slate-950 dark:text-white">
-              Daily Review — {workspace.students.find((s) => s.id === editingProgressStudentId)?.fullName}
+              Daily Review — {(() => {
+                const s = workspace.students.find((st) => st.id === editingProgressStudentId);
+                return s ? (s.nickname ? `${s.nickname} (${s.fullName})` : s.fullName) : '';
+              })()}
             </h3>
             <div className="space-y-3">
               <div>

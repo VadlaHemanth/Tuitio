@@ -734,7 +734,9 @@ const RecordPaymentModal: React.FC<{
               className="w-full px-3 py-2 rounded-xl bg-white/80 dark:bg-black border border-sky-200 dark:border-white/20 text-sm text-slate-900 dark:text-white"
             >
               {workspace.students.map((s) => (
-                <option key={s.id} value={s.id}>{s.fullName} (Class {s.classLevel} {s.board})</option>
+                <option key={s.id} value={s.id}>
+                  {s.nickname ? `${s.nickname} (${s.fullName})` : s.fullName} (Class {s.classLevel} {s.board})
+                </option>
               ))}
             </select>
           </div>
@@ -913,7 +915,9 @@ const AddDiscountModal: React.FC<{
               className="w-full px-3 py-2 rounded-xl bg-white/80 dark:bg-black border border-sky-200 dark:border-white/20 text-sm text-slate-900 dark:text-white"
             >
               {workspace.students.map((s) => (
-                <option key={s.id} value={s.id}>{s.fullName}</option>
+                <option key={s.id} value={s.id}>
+                  {s.nickname ? `${s.nickname} (${s.fullName})` : s.fullName}
+                </option>
               ))}
             </select>
           )}

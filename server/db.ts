@@ -417,6 +417,7 @@ function mapStudent(r: Record<string, unknown>): Student {
     id: String(r.id),
     studentCode: String(r.student_code),
     fullName: String(r.full_name),
+    nickname: r.nickname ? String(r.nickname) : undefined,
     avatarColor: String(r.avatar_color),
     classLevel: Number(r.class_level) as Student['classLevel'],
     board: String(r.board) as Student['board'],

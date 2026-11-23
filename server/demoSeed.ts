@@ -40,7 +40,7 @@ export function createDefaultSettings(): TuitionSettings {
     timezone: 'Asia/Kolkata',
     feeConfig: structuredClone(DEFAULT_FEE_CONFIG),
     reminders: {
-      feeDaysBefore: 3,
+      feeDaysBefore: 1,
       feeOnDueDate: true,
       feeDaysAfter: 3,
       feeOverdueRepeatDays: 7,

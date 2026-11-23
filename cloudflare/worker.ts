@@ -253,6 +253,7 @@ async function getWorkspaceSnapshot(db: D1Database): Promise<WorkspaceSnapshot> 
     id: String(r.id),
     studentCode: String(r.student_code),
     fullName: String(r.full_name),
+    nickname: r.nickname ? String(r.nickname) : undefined,
     avatarColor: String(r.avatar_color),
     classLevel: Number(r.class_level) as ClassLevel,
     board: String(r.board) as BoardType,
@@ -260,8 +261,8 @@ async function getWorkspaceSnapshot(db: D1Database): Promise<WorkspaceSnapshot> 
     admissionDate: String(r.admission_date),
     dateOfBirth: r.date_of_birth ? String(r.date_of_birth) : undefined,
     studentPhone: r.student_phone ? String(r.student_phone) : undefined,
-    parentName: String(r.parent_name),
-    parentPhone: String(r.parent_phone),
+    parentName: String(r.parent_name ?? ''),
+    parentPhone: String(r.parent_phone ?? ''),
     emergencyContact: r.emergency_contact ? String(r.emergency_contact) : undefined,
     address: r.address ? String(r.address) : undefined,
     subjects: JSON.parse(String(r.subjects_json || '[]')),
@@ -270,7 +271,7 @@ async function getWorkspaceSnapshot(db: D1Database): Promise<WorkspaceSnapshot> 
     academicPerformance: Number(r.academic_performance ?? 75),
     preferredArrivalTime: String(r.preferred_arrival_time || '18:00'),
     allocatedSlot: String(r.allocated_slot || '18:00–20:00'),
-    expectedDurationMinutes: Number(r.expected_duration_minutes ?? 90),
+    expectedDurationMinutes: Number(r.expected_duration_minutes ?? 120),
     regularDays: JSON.parse(String(r.regular_days_json || '[1,2,3,4,5,6]')),
     feeDueDay: Number(r.fee_due_day ?? 5),
     feeOverride: r.fee_override_json ? JSON.parse(String(r.fee_override_json)) : null,
@@ -768,7 +769,7 @@ export default {
       await env.DB
         .prepare(`
           INSERT INTO students (
-            id, student_code, full_name, avatar_color, class_level, board, school_name,
+            id, student_code, full_name, nickname, avatar_color, class_level, board, school_name,
             admission_date, date_of_birth, student_phone, parent_name, parent_phone,
             emergency_contact, address, subjects_json, strengths_json, weaknesses_json,
             academic_performance, preferred_arrival_time, allocated_slot, expected_duration_minutes,
@@ -780,6 +781,7 @@ export default {
           id,
           studentCode,
           String(body.fullName || '').trim(),
+          body.nickname ? String(body.nickname).trim() : null,
           String(body.avatarColor || '#0284C7'),
           Number(body.classLevel || 5),
           String(body.board || 'SSC'),
@@ -791,13 +793,13 @@ export default {
           String(body.parentPhone || ''),
           body.emergencyContact ? String(body.emergencyContact) : null,
           body.address ? String(body.address) : null,
-          JSON.stringify(body.subjects || ['Mathematics', 'Science', 'English']),
+          JSON.stringify(body.subjects || ['All Subjects']),
           JSON.stringify(body.strengths || []),
           JSON.stringify(body.weaknesses || []),
           Number(body.academicPerformance || 75),
           String(body.preferredArrivalTime || '18:00'),
-          String(body.allocatedSlot || '18:00–19:30'),
-          Number(body.expectedDurationMinutes || 90),
+          String(body.allocatedSlot || '18:00–20:00'),
+          Number(body.expectedDurationMinutes || 120),
           JSON.stringify(body.regularDays || [1, 2, 3, 4, 5, 6]),
           Number(body.feeDueDay || 5),
           body.feeOverride ? JSON.stringify(body.feeOverride) : null,
@@ -811,7 +813,125 @@ export default {
         .run();
 
       await logAudit(env.DB, 'CREATE_STUDENT', 'student', id, `Enrolled student ${body.fullName} (Class ${body.classLevel} ${body.board})`);
-      return jsonResponse(await getWorkspaceSnapshot(env.DB), 201);
+      const snap = await getWorkspaceSnapshot(env.DB);
+      return jsonResponse({ id, snapshot: snap, ...snap }, 201);
+    }
+
+    const studentIdMatch = url.pathname.match(/^\/api\/students\/([^/]+)$/);
+    if (studentIdMatch && method === 'PUT') {
+      const id = studentIdMatch[1];
+      const body = (await request.json().catch(() => ({}))) as Record<string, unknown>;
+      const existing = await env.DB.prepare('SELECT * FROM students WHERE id = ?').bind(id).first<Record<string, unknown>>();
+      if (!existing) return errorResponse('Student not found.', 404);
+
+      const now = new Date().toISOString();
+      await env.DB
+        .prepare(`
+          UPDATE students SET
+            full_name = COALESCE(?, full_name),
+            nickname = ?,
+            class_level = COALESCE(?, class_level),
+            board = COALESCE(?, board),
+            school_name = COALESCE(?, school_name),
+            admission_date = COALESCE(?, admission_date),
+            parent_name = COALESCE(?, parent_name),
+            parent_phone = COALESCE(?, parent_phone),
+            preferred_arrival_time = COALESCE(?, preferred_arrival_time),
+            allocated_slot = COALESCE(?, allocated_slot),
+            expected_duration_minutes = COALESCE(?, expected_duration_minutes),
+            fee_due_day = COALESCE(?, fee_due_day),
+            fee_override_json = ?,
+            subjects_json = COALESCE(?, subjects_json),
+            strengths_json = COALESCE(?, strengths_json),
+            weaknesses_json = COALESCE(?, weaknesses_json),
+            academic_goals = COALESCE(?, academic_goals),
+            notes = COALESCE(?, notes),
+            learning_speed = COALESCE(?, learning_speed),
+            priority = COALESCE(?, priority),
+            updated_at = ?
+          WHERE id = ?
+        `)
+        .bind(
+          body.fullName !== undefined ? String(body.fullName).trim() : null,
+          body.nickname !== undefined ? (body.nickname ? String(body.nickname).trim() : null) : (existing.nickname ?? null),
+          body.classLevel !== undefined ? Number(body.classLevel) : null,
+          body.board !== undefined ? String(body.board) : null,
+          body.schoolName !== undefined ? String(body.schoolName) : null,
+          body.admissionDate !== undefined ? String(body.admissionDate) : null,
+          body.parentName !== undefined ? String(body.parentName) : null,
+          body.parentPhone !== undefined ? String(body.parentPhone) : null,
+          body.preferredArrivalTime !== undefined ? String(body.preferredArrivalTime) : null,
+          body.allocatedSlot !== undefined ? String(body.allocatedSlot) : null,
+          body.expectedDurationMinutes !== undefined ? Number(body.expectedDurationMinutes) : null,
+          body.feeDueDay !== undefined ? Number(body.feeDueDay) : null,
+          body.feeOverride !== undefined ? (body.feeOverride ? JSON.stringify(body.feeOverride) : null) : (existing.fee_override_json ?? null),
+          body.subjects !== undefined ? JSON.stringify(body.subjects) : null,
+          body.strengths !== undefined ? JSON.stringify(body.strengths) : null,
+          body.weaknesses !== undefined ? JSON.stringify(body.weaknesses) : null,
+          body.academicGoals !== undefined ? String(body.academicGoals) : null,
+          body.notes !== undefined ? String(body.notes) : null,
+          body.learningSpeed !== undefined ? String(body.learningSpeed) : null,
+          body.priority !== undefined ? String(body.priority) : null,
+          now,
+          id,
+        )
+        .run();
+
+      await logAudit(env.DB, 'UPDATE_STUDENT', 'student', id, `Updated student profile for ${body.fullName || existing.full_name}`);
+      const snap = await getWorkspaceSnapshot(env.DB);
+      return jsonResponse({ snapshot: snap, ...snap });
+    }
+
+    const studentStatusMatch = url.pathname.match(/^\/api\/students\/([^/]+)\/status$/);
+    if (studentStatusMatch && method === 'POST') {
+      const id = studentStatusMatch[1];
+      const body = (await request.json().catch(() => ({}))) as Record<string, unknown>;
+      const status = String(body.status || 'active');
+      const now = new Date().toISOString();
+      const discAt = status === 'discontinued' ? formatIstDate(new Date()) : null;
+      await env.DB
+        .prepare('UPDATE students SET status = ?, discontinued_at = ?, updated_at = ? WHERE id = ?')
+        .bind(status, discAt, now, id)
+        .run();
+      await logAudit(env.DB, 'CHANGE_STATUS', 'student', id, `Updated status to ${status}`);
+      const snap = await getWorkspaceSnapshot(env.DB);
+      return jsonResponse({ snapshot: snap, ...snap });
+    }
+
+    if (studentIdMatch && method === 'DELETE') {
+      const id = studentIdMatch[1];
+      await env.DB.prepare('DELETE FROM students WHERE id = ?').bind(id).run();
+      await logAudit(env.DB, 'PERMANENT_DELETE', 'student', id, 'Deleted student permanently');
+      const snap = await getWorkspaceSnapshot(env.DB);
+      return jsonResponse({ snapshot: snap, ...snap });
+    }
+
+    if (url.pathname === '/api/students/promote' && method === 'POST') {
+      const body = (await request.json().catch(() => ({}))) as Record<string, unknown>;
+      const studentIds = Array.isArray(body.studentIds) ? body.studentIds : [];
+      const overridePolicy = String(body.overridePolicy || 'adopt_class_rate');
+      const targetBoard = body.targetBoard ? String(body.targetBoard) : undefined;
+      const now = new Date().toISOString();
+      let promoted = 0;
+      let graduated = 0;
+
+      for (const sid of studentIds) {
+        const row = await env.DB.prepare('SELECT id, full_name, class_level, board, fee_override_json FROM students WHERE id = ?').bind(sid).first<{ id: string; full_name: string; class_level: number; board: string; fee_override_json: string | null }>();
+        if (!row) continue;
+
+        if (row.class_level >= 10) {
+          await env.DB.prepare('UPDATE students SET status = ?, updated_at = ? WHERE id = ?').bind('graduated', now, sid).run();
+          graduated += 1;
+        } else {
+          const nextClass = row.class_level + 1;
+          const nextBoard = targetBoard ?? row.board;
+          const nextOverride = overridePolicy === 'keep_override' ? row.fee_override_json : null;
+          await env.DB.prepare('UPDATE students SET class_level = ?, board = ?, fee_override_json = ?, updated_at = ? WHERE id = ?').bind(nextClass, nextBoard, nextOverride, now, sid).run();
+          promoted += 1;
+        }
+      }
+      const snap = await getWorkspaceSnapshot(env.DB);
+      return jsonResponse({ promoted, graduated, snapshot: snap, ...snap });
     }
 
     // 9. Attendance
@@ -832,7 +952,27 @@ export default {
           .bind(generateId('att'), studentId, date, status, actualArrivalTime ?? null, departureTime ?? null, note ?? '', now, now)
           .run();
       }
-      return jsonResponse(await getWorkspaceSnapshot(env.DB));
+      const snap = await getWorkspaceSnapshot(env.DB);
+      return jsonResponse({ snapshot: snap, ...snap });
+    }
+
+    if (url.pathname === '/api/attendance/bulk' && method === 'POST') {
+      const body = (await request.json().catch(() => ({}))) as Record<string, unknown>;
+      const date = String(body.date || formatIstDate(new Date()));
+      const entries = Array.isArray(body.entries) ? body.entries : [];
+      const now = new Date().toISOString();
+
+      for (const e of entries) {
+        const existing = await env.DB.prepare('SELECT id FROM attendance WHERE student_id = ? AND date = ?').bind(e.studentId, date).first<{ id: string }>();
+        if (existing) {
+          await env.DB.prepare('UPDATE attendance SET status = ?, actual_arrival_time = ?, note = ?, updated_at = ? WHERE id = ?').bind(e.status, e.actualArrivalTime ?? null, e.note ?? '', now, existing.id).run();
+        } else {
+          await env.DB.prepare('INSERT INTO attendance (id, student_id, date, status, actual_arrival_time, note, is_demo, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, 0, ?, ?)').bind(generateId('att'), e.studentId, date, e.status, e.actualArrivalTime ?? null, e.note ?? '', now, now).run();
+        }
+      }
+      await logAudit(env.DB, 'BULK_ATTENDANCE', 'attendance', date, `Marked attendance for ${entries.length} students`);
+      const snap = await getWorkspaceSnapshot(env.DB);
+      return jsonResponse({ snapshot: snap, ...snap });
     }
 
     // 10. Homework
@@ -868,7 +1008,237 @@ export default {
           )
           .run();
       }
-      return jsonResponse(await getWorkspaceSnapshot(env.DB), 201);
+      const snap = await getWorkspaceSnapshot(env.DB);
+      return jsonResponse({ snapshot: snap, ...snap }, 201);
+    }
+
+    const hwIdMatch = url.pathname.match(/^\/api\/homework\/([^/]+)$/);
+    if (hwIdMatch && method === 'PUT') {
+      const id = hwIdMatch[1];
+      const body = (await request.json().catch(() => ({}))) as Record<string, unknown>;
+      const now = new Date().toISOString();
+      const completedDate = body.status === 'completed' || body.status === 'verified' ? formatIstDate(new Date()) : null;
+
+      await env.DB
+        .prepare(`
+          UPDATE homework SET
+            status = COALESCE(?, status),
+            completion_pct = COALESCE(?, completion_pct),
+            teacher_verified = COALESCE(?, teacher_verified),
+            needs_help = COALESCE(?, needs_help),
+            remarks = COALESCE(?, remarks),
+            due_date = COALESCE(?, due_date),
+            completed_date = COALESCE(?, completed_date),
+            updated_at = ?
+          WHERE id = ?
+        `)
+        .bind(
+          body.status !== undefined ? String(body.status) : null,
+          body.completionPct !== undefined ? Number(body.completionPct) : null,
+          body.teacherVerified !== undefined ? (body.teacherVerified ? 1 : 0) : null,
+          body.needsHelp !== undefined ? (body.needsHelp ? 1 : 0) : null,
+          body.remarks !== undefined ? String(body.remarks) : null,
+          body.dueDate !== undefined ? String(body.dueDate) : null,
+          completedDate,
+          now,
+          id,
+        )
+        .run();
+      const snap = await getWorkspaceSnapshot(env.DB);
+      return jsonResponse({ snapshot: snap, ...snap });
+    }
+
+    if (hwIdMatch && method === 'DELETE') {
+      const id = hwIdMatch[1];
+      await env.DB.prepare('DELETE FROM homework WHERE id = ?').bind(id).run();
+      const snap = await getWorkspaceSnapshot(env.DB);
+      return jsonResponse({ snapshot: snap, ...snap });
+    }
+
+    if (url.pathname === '/api/homework/carry-forward' && method === 'POST') {
+      const snap = await getWorkspaceSnapshot(env.DB);
+      const drafts = buildCarryForwardHomeworkDrafts({
+        homework: snap.homework,
+        todayDate: snap.todayIst,
+        tomorrowDate: addDaysToDateStr(snap.todayIst, 1),
+      });
+      const now = new Date().toISOString();
+
+      for (const d of drafts) {
+        await env.DB
+          .prepare('UPDATE homework SET status = ?, updated_at = ? WHERE id = ?')
+          .bind('carried_forward', now, d.carriedFromId)
+          .run();
+
+        await env.DB
+          .prepare(`
+            INSERT INTO homework (
+              id, student_id, subject, chapter, topic, title, instructions, assigned_date, due_date,
+              estimated_minutes, priority, source, completion_pct, status, teacher_verified, needs_help, remarks, carried_from_id, is_demo, created_at, updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'not_started', 0, 0, ?, ?, 0, ?, ?)
+          `)
+          .bind(
+            generateId('hw'),
+            d.studentId,
+            d.subject,
+            d.chapter,
+            d.topic,
+            d.title,
+            d.instructions,
+            d.assignedDate,
+            d.dueDate,
+            d.estimatedMinutes,
+            d.priority,
+            d.source,
+            d.completionPct,
+            d.remarks,
+            d.carriedFromId,
+            now,
+            now,
+          )
+          .run();
+      }
+      const updatedSnap = await getWorkspaceSnapshot(env.DB);
+      return jsonResponse({ carriedCount: drafts.length, snapshot: updatedSnap, ...updatedSnap });
+    }
+
+    // Exams
+    if (url.pathname === '/api/exams' && method === 'POST') {
+      const body = (await request.json().catch(() => ({}))) as Record<string, unknown>;
+      const id = generateId('ex');
+      const now = new Date().toISOString();
+      await env.DB
+        .prepare(`
+          INSERT INTO exams (
+            id, student_id, subject, exam_name, exam_type, exam_date, syllabus, max_marks,
+            obtained_marks, important_chapters_json, preparation_status, revision_plan, weak_areas_json, is_demo, created_at, updated_at
+          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?)
+        `)
+        .bind(
+          id,
+          String(body.studentId),
+          String(body.subject),
+          String(body.examName),
+          String(body.examType || 'unit_test'),
+          String(body.examDate),
+          String(body.syllabus || ''),
+          Number(body.maxMarks || 50),
+          body.obtainedMarks != null ? Number(body.obtainedMarks) : null,
+          JSON.stringify(body.importantChapters || []),
+          Number(body.preparationStatus || 25),
+          String(body.revisionPlan || ''),
+          JSON.stringify(body.weakAreas || []),
+          now,
+          now,
+        )
+        .run();
+      const snap = await getWorkspaceSnapshot(env.DB);
+      return jsonResponse({ snapshot: snap, ...snap }, 201);
+    }
+
+    const examIdMatch = url.pathname.match(/^\/api\/exams\/([^/]+)$/);
+    if (examIdMatch && method === 'PUT') {
+      const id = examIdMatch[1];
+      const body = (await request.json().catch(() => ({}))) as Record<string, unknown>;
+      const now = new Date().toISOString();
+      await env.DB
+        .prepare(`
+          UPDATE exams SET
+            subject = COALESCE(?, subject),
+            exam_name = COALESCE(?, exam_name),
+            exam_type = COALESCE(?, exam_type),
+            exam_date = COALESCE(?, exam_date),
+            syllabus = COALESCE(?, syllabus),
+            max_marks = COALESCE(?, max_marks),
+            obtained_marks = ?,
+            important_chapters_json = COALESCE(?, important_chapters_json),
+            preparation_status = COALESCE(?, preparation_status),
+            revision_plan = COALESCE(?, revision_plan),
+            weak_areas_json = COALESCE(?, weak_areas_json),
+            updated_at = ?
+          WHERE id = ?
+        `)
+        .bind(
+          body.subject !== undefined ? String(body.subject) : null,
+          body.examName !== undefined ? String(body.examName) : null,
+          body.examType !== undefined ? String(body.examType) : null,
+          body.examDate !== undefined ? String(body.examDate) : null,
+          body.syllabus !== undefined ? String(body.syllabus) : null,
+          body.maxMarks !== undefined ? Number(body.maxMarks) : null,
+          body.obtainedMarks !== undefined ? (body.obtainedMarks != null ? Number(body.obtainedMarks) : null) : null,
+          body.importantChapters !== undefined ? JSON.stringify(body.importantChapters) : null,
+          body.preparationStatus !== undefined ? Number(body.preparationStatus) : null,
+          body.revisionPlan !== undefined ? String(body.revisionPlan) : null,
+          body.weakAreas !== undefined ? JSON.stringify(body.weakAreas) : null,
+          now,
+          id,
+        )
+        .run();
+      const snap = await getWorkspaceSnapshot(env.DB);
+      return jsonResponse({ snapshot: snap, ...snap });
+    }
+
+    if (examIdMatch && method === 'DELETE') {
+      const id = examIdMatch[1];
+      await env.DB.prepare('DELETE FROM exams WHERE id = ?').bind(id).run();
+      const snap = await getWorkspaceSnapshot(env.DB);
+      return jsonResponse({ snapshot: snap, ...snap });
+    }
+
+    // Fees: Month Generation
+    if (url.pathname === '/api/fees/generate-month' && method === 'POST') {
+      const body = (await request.json().catch(() => ({}))) as Record<string, unknown>;
+      const monthKey = typeof body?.monthKey === 'string' && /^\d{4}-\d{2}$/.test(body.monthKey)
+        ? body.monthKey
+        : formatIstMonthKey(new Date());
+      const snap = await getWorkspaceSnapshot(env.DB);
+      const now = new Date().toISOString();
+      let created = 0;
+
+      for (const s of snap.students) {
+        if (s.status === 'discontinued' || s.status === 'graduated') continue;
+        const draft = buildMonthlyInvoiceDraft({
+          student: s,
+          monthKey,
+          feeConfig: snap.settings.feeConfig,
+          discounts: snap.discounts,
+          existingInvoices: snap.invoices,
+          todayDate: snap.todayIst,
+        });
+        if (!draft) continue;
+
+        await env.DB
+          .prepare(`
+            INSERT OR IGNORE INTO fee_invoices (
+              id, student_id, month_key, class_level_snapshot, board_snapshot, base_amount_paise,
+              board_surcharge_paise, override_applied, discount_paise, discount_summary,
+              total_amount_paise, paid_amount_paise, due_date, status, notes, is_demo, created_at, updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?)
+          `)
+          .bind(
+            draft.id,
+            draft.studentId,
+            draft.monthKey,
+            draft.classLevelSnapshot,
+            draft.boardSnapshot,
+            draft.baseAmountPaise,
+            draft.boardSurchargePaise,
+            draft.overrideApplied ? 1 : 0,
+            draft.discountPaise,
+            draft.discountSummary,
+            draft.totalAmountPaise,
+            draft.paidAmountPaise,
+            draft.dueDate,
+            draft.status,
+            draft.notes,
+            now,
+            now,
+          )
+          .run();
+        created += 1;
+      }
+      const updatedSnap = await getWorkspaceSnapshot(env.DB);
+      return jsonResponse({ created, snapshot: updatedSnap, ...updatedSnap });
     }
 
     // 11. Fees - Record Payment
@@ -931,7 +1301,113 @@ export default {
         .run();
 
       await logAudit(env.DB, 'RECORD_PAYMENT', 'payment', paymentId, `Recorded payment of ${formatRupeesFromPaise(amountPaise)} for ${student.fullName} (${receiptNumber})`);
-      return jsonResponse(await getWorkspaceSnapshot(env.DB));
+      const updatedSnap = await getWorkspaceSnapshot(env.DB);
+      return jsonResponse({ receiptNumber, snapshot: updatedSnap, ...updatedSnap });
+    }
+
+    const waiveMatch = url.pathname.match(/^\/api\/fees\/invoices\/([^/]+)\/waive$/);
+    if (waiveMatch && method === 'PUT') {
+      const id = waiveMatch[1];
+      const body = (await request.json().catch(() => ({}))) as Record<string, unknown>;
+      const inv = await env.DB.prepare('SELECT id, total_amount_paise, paid_amount_paise, due_date FROM fee_invoices WHERE id = ?').bind(id).first<{ id: string; total_amount_paise: number; paid_amount_paise: number; due_date: string }>();
+      if (!inv) return errorResponse('Invoice not found.', 404);
+
+      const waive = Boolean(body.waived);
+      const nextStatus = computeInvoiceStatus(inv.total_amount_paise, inv.paid_amount_paise, inv.due_date, formatIstDate(new Date()), waive);
+      await env.DB.prepare('UPDATE fee_invoices SET status = ?, updated_at = ? WHERE id = ?').bind(nextStatus, new Date().toISOString(), id).run();
+      const snap = await getWorkspaceSnapshot(env.DB);
+      return jsonResponse({ snapshot: snap, ...snap });
+    }
+
+    // Discounts
+    if (url.pathname === '/api/discounts' && method === 'POST') {
+      const body = (await request.json().catch(() => ({}))) as Record<string, unknown>;
+      const id = generateId('dsc');
+      await env.DB
+        .prepare('INSERT INTO discounts (id, name, kind, value, scope, student_id, class_level, board, start_date, end_date, active, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?)')
+        .bind(
+          id,
+          String(body.name),
+          String(body.kind || 'fixed'),
+          Number(body.value || 0),
+          String(body.scope || 'global'),
+          body.studentId ? String(body.studentId) : null,
+          body.classLevel != null ? Number(body.classLevel) : null,
+          body.board ? String(body.board) : null,
+          body.startDate ? String(body.startDate) : null,
+          body.endDate ? String(body.endDate) : null,
+          new Date().toISOString(),
+        )
+        .run();
+      const snap = await getWorkspaceSnapshot(env.DB);
+      return jsonResponse({ snapshot: snap, ...snap }, 201);
+    }
+
+    const discIdMatch = url.pathname.match(/^\/api\/discounts\/([^/]+)$/);
+    if (discIdMatch && method === 'DELETE') {
+      const id = discIdMatch[1];
+      await env.DB.prepare('DELETE FROM discounts WHERE id = ?').bind(id).run();
+      const snap = await getWorkspaceSnapshot(env.DB);
+      return jsonResponse({ snapshot: snap, ...snap });
+    }
+
+    // Daily Progress
+    if (url.pathname === '/api/progress' && method === 'POST') {
+      const body = (await request.json().catch(() => ({}))) as Record<string, unknown>;
+      const now = new Date().toISOString();
+      const id = generateId('prg');
+      await env.DB
+        .prepare(`
+          INSERT INTO daily_progress (
+            id, student_id, date, subjects_covered_json, topics_studied, homework_completed_count,
+            homework_remaining_count, doubts_cleared, teacher_comment, improvement_areas,
+            next_session_tasks, completion_pct, is_demo, updated_at
+          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?)
+          ON CONFLICT(student_id, date) DO UPDATE SET
+            subjects_covered_json = excluded.subjects_covered_json,
+            topics_studied = excluded.topics_studied,
+            homework_completed_count = excluded.homework_completed_count,
+            homework_remaining_count = excluded.homework_remaining_count,
+            doubts_cleared = excluded.doubts_cleared,
+            teacher_comment = excluded.teacher_comment,
+            improvement_areas = excluded.improvement_areas,
+            next_session_tasks = excluded.next_session_tasks,
+            completion_pct = excluded.completion_pct,
+            updated_at = excluded.updated_at
+        `)
+        .bind(
+          id,
+          String(body.studentId),
+          String(body.date),
+          JSON.stringify(body.subjectsCovered || []),
+          String(body.topicsStudied || ''),
+          Number(body.homeworkCompletedCount || 0),
+          Number(body.homeworkRemainingCount || 0),
+          String(body.doubtsCleared || ''),
+          String(body.teacherComment || ''),
+          String(body.improvementAreas || ''),
+          String(body.nextSessionTasks || ''),
+          Number(body.completionPct || 80),
+          now,
+        )
+        .run();
+      const snap = await getWorkspaceSnapshot(env.DB);
+      return jsonResponse({ snapshot: snap, ...snap });
+    }
+
+    // Notifications
+    const notifReadMatch = url.pathname.match(/^\/api\/notifications\/([^/]+)\/read$/);
+    if (notifReadMatch && method === 'POST') {
+      const id = notifReadMatch[1];
+      await env.DB.prepare('UPDATE notifications SET read = 1 WHERE id = ?').bind(id).run();
+      const snap = await getWorkspaceSnapshot(env.DB);
+      return jsonResponse({ snapshot: snap, ...snap });
+    }
+
+    if (url.pathname === '/api/notifications/read-all' && method === 'POST') {
+      await env.DB.prepare('UPDATE notifications SET read = 1').run();
+      const snap = await getWorkspaceSnapshot(env.DB);
+      return jsonResponse({ snapshot: snap, ...snap });
     }
 
     // 12. Settings

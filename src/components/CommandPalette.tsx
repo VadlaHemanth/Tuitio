@@ -65,6 +65,7 @@ export const CommandPalette: React.FC<CommandPaletteProps> = ({
       .filter(
         (s) =>
           !q ||
+          (s.nickname && s.nickname.toLowerCase().includes(q)) ||
           s.fullName.toLowerCase().includes(q) ||
           s.studentCode.toLowerCase().includes(q) ||
           s.board.toLowerCase().includes(q) ||
@@ -185,7 +186,9 @@ export const CommandPalette: React.FC<CommandPaletteProps> = ({
                     <div className="flex items-center gap-2.5 min-w-0">
                       <Users className="w-4 h-4 text-sky-600 dark:text-neutral-400 shrink-0" />
                       <div className="min-w-0">
-                        <p className="text-sm font-medium text-slate-900 dark:text-white truncate">{s.fullName}</p>
+                        <p className="text-sm font-semibold text-slate-900 dark:text-white truncate">
+                          {s.nickname ? `${s.nickname} (${s.fullName})` : s.fullName}
+                        </p>
                         <p className="text-xs text-slate-500 dark:text-neutral-400 truncate">
                           Class {s.classLevel} · {s.board} · {s.parentName}
                         </p>

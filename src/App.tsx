@@ -100,6 +100,18 @@ export default function App() {
     }, 3200);
   }, []);
 
+  const safeSetWorkspace = useCallback((res: unknown) => {
+    if (!res || typeof res !== 'object') return;
+    const snap =
+      'snapshot' in res && (res as any).snapshot && typeof (res as any).snapshot === 'object'
+        ? (res as any).snapshot
+        : (res as WorkspaceSnapshot);
+    if (snap && Array.isArray(snap.students)) {
+      setWorkspace(snap);
+      cacheWorkspaceSnapshot(snap);
+    }
+  }, []);
+
   const loadWorkspace = useCallback(async () => {
     try {
       const snap = await apiRequest<WorkspaceSnapshot>('/api/workspace');
@@ -477,11 +489,11 @@ export default function App() {
               selectedStudentId={selectedStudentId}
               onSelectStudent={setSelectedStudentId}
               onCreateStudent={async (payload) => {
-                const res = await apiRequest<{ snapshot: WorkspaceSnapshot }>('/api/students', {
+                const res = await apiRequest<any>('/api/students', {
                   method: 'POST',
                   body: payload,
                 });
-                setWorkspace(res.snapshot);
+                safeSetWorkspace(res);
                 showToast('Student enrolled with automatic fee calculation.');
               }}
               onUpdateStudent={async (id, payload) => {
@@ -489,7 +501,7 @@ export default function App() {
                   method: 'PUT',
                   body: payload,
                 });
-                setWorkspace(snap);
+                safeSetWorkspace(snap);
                 showToast('Student profile saved.');
               }}
               onChangeStatus={async (id, status: StudentStatus) => {
@@ -497,7 +509,7 @@ export default function App() {
                   method: 'POST',
                   body: { status },
                 });
-                setWorkspace(snap);
+                safeSetWorkspace(snap);
                 showToast(`Student status updated to ${status} (history preserved).`);
               }}
               onPermanentDelete={async (id) => {
@@ -505,7 +517,7 @@ export default function App() {
                   method: 'DELETE',
                   body: { confirmDelete: true },
                 });
-                setWorkspace(snap);
+                safeSetWorkspace(snap);
                 showToast('Student record permanently removed.');
               }}
               onPromoteStudents={async (params: {
@@ -513,12 +525,12 @@ export default function App() {
                 overridePolicy: 'keep_override' | 'adopt_class_rate';
                 targetBoard?: BoardType;
               }) => {
-                const res = await apiRequest<{ promoted: number; graduated: number; snapshot: WorkspaceSnapshot }>(
+                const res = await apiRequest<any>(
                   '/api/students/promote',
                   { method: 'POST', body: params },
                 );
-                setWorkspace(res.snapshot);
-                showToast(`Promoted ${res.promoted}, graduated ${res.graduated}. Historical invoices preserved.`);
+                safeSetWorkspace(res);
+                showToast(`Promoted ${res?.promoted ?? 0}, graduated ${res?.graduated ?? 0}. Historical invoices preserved.`);
               }}
               onRecordPaymentShortcut={(studentId) => {
                 setFeePaymentStudentId(studentId);
@@ -582,12 +594,12 @@ export default function App() {
                 showToast('Homework removed.');
               }}
               onCarryForward={async () => {
-                const res = await apiRequest<{ carriedCount: number; snapshot: WorkspaceSnapshot }>(
+                const res = await apiRequest<any>(
                   '/api/homework/carry-forward',
                   { method: 'POST', body: {} },
                 );
-                setWorkspace(res.snapshot);
-                return res.carriedCount;
+                safeSetWorkspace(res);
+                return res?.carriedCount ?? 0;
               }}
             />
           )}
@@ -625,12 +637,12 @@ export default function App() {
               initialPaymentStudentId={feePaymentStudentId}
               onClearInitialPaymentStudent={() => setFeePaymentStudentId(null)}
               onGenerateMonth={async (monthKey) => {
-                const res = await apiRequest<{ created: number; snapshot: WorkspaceSnapshot }>(
+                const res = await apiRequest<any>(
                   '/api/fees/generate-month',
                   { method: 'POST', body: { monthKey } },
                 );
-                setWorkspace(res.snapshot);
-                return res.created;
+                safeSetWorkspace(res);
+                return res?.created ?? 0;
               }}
               onRecordPayment={async (payload: {
                 studentId: string;
@@ -641,13 +653,13 @@ export default function App() {
                 notes: string;
                 idempotencyKey: string;
               }) => {
-                const res = await apiRequest<{ receiptNumber?: string; snapshot: WorkspaceSnapshot }>(
+                const res = await apiRequest<any>(
                   '/api/fees/payments',
                   { method: 'POST', body: payload },
                 );
-                setWorkspace(res.snapshot);
+                safeSetWorkspace(res);
                 showToast('Payment recorded.');
-                return { receiptNumber: res.receiptNumber };
+                return { receiptNumber: res?.receiptNumber };
               }}
               onWaiveInvoice={async (invoiceId, waived) => {
                 const snap = await apiRequest<WorkspaceSnapshot>(`/api/fees/invoices/${invoiceId}/waive`, {

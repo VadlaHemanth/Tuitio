@@ -217,7 +217,9 @@ export const HomeworkView: React.FC<HomeworkViewProps> = ({
         >
           <option value="all">All Students</option>
           {activeStudents.map((s) => (
-            <option key={s.id} value={s.id}>{s.fullName} (Class {s.classLevel} {s.board})</option>
+            <option key={s.id} value={s.id}>
+              {s.nickname ? `${s.nickname} (${s.fullName})` : s.fullName} (Class {s.classLevel} {s.board})
+            </option>
           ))}
         </select>
       </div>

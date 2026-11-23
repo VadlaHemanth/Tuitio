@@ -360,10 +360,21 @@ export const AttendanceView: React.FC<AttendanceViewProps> = ({
                 return (
                   <div key={s.id} className="py-2.5 flex items-center justify-between gap-2">
                     <div className="min-w-0">
-                      <p className="text-sm font-medium text-slate-900 dark:text-white truncate">{s.fullName}</p>
-                      <p className="text-xs text-slate-500 dark:text-neutral-400">
-                        Class {s.classLevel} · {s.board} · {formatHHMMTo12Hour(s.preferredArrivalTime)}
-                      </p>
+                      {s.nickname ? (
+                        <div>
+                          <p className="text-sm font-bold text-slate-950 dark:text-white truncate">{s.nickname}</p>
+                          <p className="text-xs font-medium text-slate-500 dark:text-neutral-400 truncate">
+                            {s.fullName} · Class {s.classLevel} {s.board} · {formatHHMMTo12Hour(s.preferredArrivalTime)}
+                          </p>
+                        </div>
+                      ) : (
+                        <div>
+                          <p className="text-sm font-medium text-slate-900 dark:text-white truncate">{s.fullName}</p>
+                          <p className="text-xs text-slate-500 dark:text-neutral-400">
+                            Class {s.classLevel} · {s.board} · {formatHHMMTo12Hour(s.preferredArrivalTime)}
+                          </p>
+                        </div>
+                      )}
                     </div>
                     <div className="flex items-center gap-1 shrink-0">
                       <button
@@ -433,11 +444,18 @@ export const AttendanceView: React.FC<AttendanceViewProps> = ({
                       <button
                         type="button"
                         onClick={() => onOpenStudent(s.id)}
-                        className="font-semibold text-slate-900 dark:text-white hover:underline text-left"
+                        className="hover:underline text-left block"
                       >
-                        {s.fullName}
+                        {s.nickname ? (
+                          <div>
+                            <span className="font-bold text-sm text-slate-950 dark:text-white">{s.nickname}</span>
+                            <span className="block text-xs font-medium text-slate-500 dark:text-neutral-400">{s.fullName}</span>
+                          </div>
+                        ) : (
+                          <span className="font-semibold text-slate-900 dark:text-white">{s.fullName}</span>
+                        )}
                       </button>
-                      <p className="text-xs text-slate-500 dark:text-neutral-400">
+                      <p className="text-[11px] text-slate-500 dark:text-neutral-400">
                         Class {s.classLevel} · {s.board}
                       </p>
                     </td>
@@ -581,7 +599,7 @@ const SwipeAttendanceCard: React.FC<SwipeCardProps> = ({
     .filter((a) => a.studentId === student.id && a.date < selectedDate)
     .sort((a, b) => b.date.localeCompare(a.date))[0];
 
-  const initials = student.fullName
+  const initials = (student.nickname || student.fullName)
     .split(' ')
     .map((p) => p[0])
     .join('')
@@ -628,13 +646,28 @@ const SwipeAttendanceCard: React.FC<SwipeCardProps> = ({
             {initials}
           </div>
           <div className="min-w-0">
-            <button
-              type="button"
-              onClick={() => onOpenStudent(student.id)}
-              className="text-xl font-bold text-slate-950 dark:text-white hover:underline text-left truncate block max-w-full"
-            >
-              {student.fullName}
-            </button>
+            {student.nickname ? (
+              <div>
+                <button
+                  type="button"
+                  onClick={() => onOpenStudent(student.id)}
+                  className="text-2xl font-black text-slate-950 dark:text-white hover:underline text-left truncate block max-w-full"
+                >
+                  {student.nickname}
+                </button>
+                <p className="text-xs font-semibold text-slate-500 dark:text-neutral-400">
+                  {student.fullName}
+                </p>
+              </div>
+            ) : (
+              <button
+                type="button"
+                onClick={() => onOpenStudent(student.id)}
+                className="text-xl font-bold text-slate-950 dark:text-white hover:underline text-left truncate block max-w-full"
+              >
+                {student.fullName}
+              </button>
+            )}
             <p className="text-sm text-slate-600 dark:text-neutral-300">
               Class {student.classLevel} · {student.board} · {student.schoolName || 'Regular Batch'}
             </p>

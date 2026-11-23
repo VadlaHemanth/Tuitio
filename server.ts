@@ -318,24 +318,25 @@ async function startServer() {
 
   // --- STUDENTS ---
   const studentPayloadSchema = z.object({
-    fullName: z.string().trim().min(2).max(100),
+    fullName: z.string().trim().min(1).max(100),
+    nickname: z.string().trim().max(50).optional().nullable(),
     classLevel: z.number().int().min(3).max(10),
     board: z.enum(['SSC', 'CBSE', 'ICSE']),
     schoolName: z.string().trim().max(120).default(''),
     admissionDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional(),
     dateOfBirth: z.string().optional(),
     studentPhone: z.string().max(25).optional(),
-    parentName: z.string().trim().min(2).max(100),
-    parentPhone: z.string().trim().min(7).max(25),
+    parentName: z.string().trim().max(100).default(''),
+    parentPhone: z.string().trim().max(25).default(''),
     emergencyContact: z.string().max(25).optional(),
     address: z.string().max(240).optional(),
-    subjects: z.array(z.string().trim().min(1)).default(['Mathematics', 'Science', 'English']),
+    subjects: z.array(z.string().trim()).default(['All Subjects']),
     strengths: z.array(z.string().trim()).default([]),
     weaknesses: z.array(z.string().trim()).default([]),
     academicPerformance: z.number().min(0).max(100).default(75),
     preferredArrivalTime: z.string().regex(/^\d{2}:\d{2}$/).default('18:00'),
-    allocatedSlot: z.string().max(40).default('18:00–19:30'),
-    expectedDurationMinutes: z.number().int().min(30).max(180).default(90),
+    allocatedSlot: z.string().max(40).default('18:00–20:00'),
+    expectedDurationMinutes: z.number().int().min(30).max(240).default(120),
     regularDays: z.array(z.number().int().min(0).max(6)).default([1, 2, 3, 4, 5, 6]),
     feeDueDay: z.number().int().min(1).max(28).default(5),
     feeOverride: z
@@ -370,17 +371,18 @@ async function startServer() {
 
     db.prepare(`
       INSERT INTO students (
-        id, student_code, full_name, avatar_color, class_level, board, school_name,
+        id, student_code, full_name, nickname, avatar_color, class_level, board, school_name,
         admission_date, date_of_birth, student_phone, parent_name, parent_phone,
         emergency_contact, address, subjects_json, strengths_json, weaknesses_json,
         academic_performance, preferred_arrival_time, allocated_slot, expected_duration_minutes,
         regular_days_json, fee_due_day, fee_override_json, credit_balance_paise, notes,
         learning_speed, priority, academic_goals, status, is_demo, created_at, updated_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?, ?, 'active', 0, ?, ?)
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?, ?, 'active', 0, ?, ?)
     `).run(
       id,
       code,
       d.fullName,
+      d.nickname || null,
       color,
       d.classLevel,
       d.board,
@@ -427,6 +429,7 @@ async function startServer() {
     db.prepare(`
       UPDATE students SET
         full_name = COALESCE(?, full_name),
+        nickname = COALESCE(?, nickname),
         class_level = COALESCE(?, class_level),
         board = COALESCE(?, board),
         school_name = COALESCE(?, school_name),
@@ -455,6 +458,7 @@ async function startServer() {
       WHERE id = ?
     `).run(
       d.fullName ?? null,
+      d.nickname !== undefined ? (d.nickname ? d.nickname : null) : null,
       d.classLevel ?? null,
       d.board ?? null,
       d.schoolName ?? null,

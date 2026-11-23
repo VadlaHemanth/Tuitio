@@ -590,12 +590,25 @@ export const CommandCenter: React.FC<CommandCenterProps> = ({
                             onClick={() => onOpenStudent(s.id)}
                             className="text-left group"
                           >
-                            <p className="font-semibold text-slate-900 dark:text-white group-hover:text-sky-700 dark:group-hover:underline">
-                              {s.fullName}
-                            </p>
-                            <p className="text-xs text-slate-500 dark:text-neutral-400">
-                              Class {s.classLevel} · {s.board} · {s.schoolName || s.studentCode}
-                            </p>
+                            {s.nickname ? (
+                              <div>
+                                <p className="font-bold text-sm text-slate-950 dark:text-white group-hover:text-sky-700 dark:group-hover:text-sky-400">
+                                  {s.nickname}
+                                </p>
+                                <p className="text-xs text-slate-500 dark:text-neutral-400">
+                                  {s.fullName} · Class {s.classLevel} {s.board}
+                                </p>
+                              </div>
+                            ) : (
+                              <div>
+                                <p className="font-semibold text-slate-900 dark:text-white group-hover:text-sky-700 dark:group-hover:underline">
+                                  {s.fullName}
+                                </p>
+                                <p className="text-xs text-slate-500 dark:text-neutral-400">
+                                  Class {s.classLevel} · {s.board} · {s.schoolName || s.studentCode}
+                                </p>
+                              </div>
+                            )}
                           </button>
                         </td>
                         <td className="py-3 px-3 font-mono tabular-nums text-xs text-slate-700 dark:text-neutral-300 whitespace-nowrap">

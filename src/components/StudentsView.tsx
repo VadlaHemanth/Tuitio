@@ -91,7 +91,7 @@ export const StudentsView: React.FC<StudentsViewProps> = ({
         if (boardFilter !== 'all' && s.board !== boardFilter) return false;
         if (dueOnly && (balanceByStudent.get(s.id) ?? 0) <= 0) return false;
         if (q) {
-          const hay = `${s.fullName} ${s.studentCode} ${s.schoolName} ${s.parentName} ${s.parentPhone} class ${s.classLevel} ${s.board}`.toLowerCase();
+          const hay = `${s.nickname || ''} ${s.fullName} ${s.studentCode} ${s.schoolName} ${s.parentName} ${s.parentPhone} class ${s.classLevel} ${s.board}`.toLowerCase();
           if (!hay.includes(q)) return false;
         }
         return true;
@@ -181,15 +181,31 @@ export const StudentsView: React.FC<StudentsViewProps> = ({
         <div className="liquid-glass-strong rounded-3xl p-5 sm:p-6 flex flex-col sm:flex-row sm:items-center justify-between gap-4">
           <div className="flex items-center gap-4">
             <div className="w-16 h-16 rounded-2xl bg-sky-600 dark:bg-white text-white dark:text-black flex items-center justify-center font-display font-bold text-xl shrink-0">
-              {selectedStudent.fullName.split(' ').map((w) => w[0]).join('').slice(0, 2).toUpperCase()}
+              {(selectedStudent.nickname || selectedStudent.fullName).split(' ').map((w) => w[0]).join('').slice(0, 2).toUpperCase()}
             </div>
             <div>
-              <h1 className="text-2xl font-bold text-slate-950 dark:text-white">{selectedStudent.fullName}</h1>
+              {selectedStudent.nickname ? (
+                <div>
+                  <div className="flex items-baseline gap-2">
+                    <h1 className="text-2xl font-black tracking-tight text-slate-950 dark:text-white">
+                      {selectedStudent.nickname}
+                    </h1>
+                    <span className="text-[11px] font-semibold text-sky-700 dark:text-sky-300 bg-sky-100/80 dark:bg-sky-950 px-2 py-0.5 rounded-full border border-sky-300/60 dark:border-sky-800">
+                      Nickname
+                    </span>
+                  </div>
+                  <p className="text-sm font-medium text-slate-500 dark:text-neutral-400">
+                    Full Name: <span className="font-semibold text-slate-800 dark:text-neutral-200">{selectedStudent.fullName}</span>
+                  </p>
+                </div>
+              ) : (
+                <h1 className="text-2xl font-bold text-slate-950 dark:text-white">{selectedStudent.fullName}</h1>
+              )}
               <p className="text-sm text-slate-600 dark:text-neutral-400">
                 Class {selectedStudent.classLevel} · {selectedStudent.board} · {selectedStudent.schoolName || 'School not set'} · <span className="capitalize">{selectedStudent.status}</span>
               </p>
               <p className="text-xs text-slate-500 dark:text-neutral-400 mt-1 font-mono tabular-nums">
-                {selectedStudent.studentCode} · Arrives {formatHHMMTo12Hour(selectedStudent.preferredArrivalTime)} · Guardian: {selectedStudent.parentName} ({selectedStudent.parentPhone})
+                {selectedStudent.studentCode} · Arrives {formatHHMMTo12Hour(selectedStudent.preferredArrivalTime)} ({selectedStudent.expectedDurationMinutes} min) {selectedStudent.parentName ? `· Guardian: ${selectedStudent.parentName} ${selectedStudent.parentPhone ? `(${selectedStudent.parentPhone})` : ''}` : ''}
               </p>
             </div>
           </div>
@@ -705,13 +721,27 @@ export const StudentsView: React.FC<StudentsViewProps> = ({
                         }}
                         className="text-left group"
                       >
-                        <p className="font-semibold text-slate-900 dark:text-white group-hover:text-sky-700 dark:group-hover:underline">
-                          {s.fullName}
-                          {s.isDemo ? <span className="ml-1.5 text-[11px] font-normal text-slate-400">(Sample)</span> : null}
-                        </p>
-                        <p className="text-xs text-slate-500 dark:text-neutral-400">
-                          {s.parentName} · {s.parentPhone}
-                        </p>
+                        {s.nickname ? (
+                          <div>
+                            <p className="font-bold text-base text-slate-950 dark:text-white group-hover:text-sky-700 dark:group-hover:text-sky-400 transition-colors">
+                              {s.nickname}
+                              {s.isDemo ? <span className="ml-1.5 text-[11px] font-normal text-slate-400">(Sample)</span> : null}
+                            </p>
+                            <p className="text-xs font-medium text-slate-500 dark:text-neutral-400">
+                              {s.fullName} {s.parentPhone ? `· ${s.parentPhone}` : ''}
+                            </p>
+                          </div>
+                        ) : (
+                          <div>
+                            <p className="font-semibold text-slate-900 dark:text-white group-hover:text-sky-700 dark:group-hover:underline">
+                              {s.fullName}
+                              {s.isDemo ? <span className="ml-1.5 text-[11px] font-normal text-slate-400">(Sample)</span> : null}
+                            </p>
+                            <p className="text-xs text-slate-500 dark:text-neutral-400">
+                              {s.parentName ? `${s.parentName} · ` : ''}{s.parentPhone || s.schoolName || ''}
+                            </p>
+                          </div>
+                        )}
                       </button>
                     </td>
                     <td className="py-3 px-3 text-xs text-slate-700 dark:text-neutral-300 whitespace-nowrap">
@@ -816,17 +846,18 @@ const StudentFormModal: React.FC<StudentFormModalProps> = ({
   onSubmit,
 }) => {
   const [fullName, setFullName] = useState(initialStudent?.fullName ?? '');
+  const [nickname, setNickname] = useState(initialStudent?.nickname ?? '');
   const [classLevel, setClassLevel] = useState<ClassLevel>(initialStudent?.classLevel ?? 7);
   const [board, setBoard] = useState<BoardType>(initialStudent?.board ?? 'CBSE');
   const [schoolName, setSchoolName] = useState(initialStudent?.schoolName ?? '');
   const [parentName, setParentName] = useState(initialStudent?.parentName ?? '');
   const [parentPhone, setParentPhone] = useState(initialStudent?.parentPhone ?? '');
   const [preferredArrivalTime, setPreferredArrivalTime] = useState(initialStudent?.preferredArrivalTime ?? '18:00');
-  const [expectedDurationMinutes, setExpectedDurationMinutes] = useState(initialStudent?.expectedDurationMinutes ?? 90);
-  const [feeDueDay, setFeeDueDay] = useState(initialStudent?.feeDueDay ?? workspace.settings.feeConfig.defaultDueDay);
+  const [expectedDurationMinutes, setExpectedDurationMinutes] = useState(initialStudent?.expectedDurationMinutes ?? 120);
+  const [feeDueDay, setFeeDueDay] = useState(initialStudent?.feeDueDay ?? 5);
   const [learningSpeed, setLearningSpeed] = useState<LearningSpeed>(initialStudent?.learningSpeed ?? 'steady');
   const [priority, setPriority] = useState<StudentPriority>(initialStudent?.priority ?? 'normal');
-  const [subjectsText, setSubjectsText] = useState((initialStudent?.subjects ?? ['Mathematics', 'Science', 'English']).join(', '));
+  const [subjectsText, setSubjectsText] = useState((initialStudent?.subjects ?? ['All Subjects']).join(', '));
   const [weaknessesText, setWeaknessesText] = useState((initialStudent?.weaknesses ?? []).join(', '));
   const [academicGoals, setAcademicGoals] = useState(initialStudent?.academicGoals ?? '');
   const [notes, setNotes] = useState(initialStudent?.notes ?? '');
@@ -883,8 +914,8 @@ const StudentFormModal: React.FC<StudentFormModalProps> = ({
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!fullName.trim() || !parentName.trim() || parentPhone.trim().length < 7) {
-      setError('Please enter student full name, guardian name, and valid guardian phone number.');
+    if (!fullName.trim()) {
+      setError('Please enter student full name.');
       return;
     }
     setSaving(true);
@@ -904,6 +935,7 @@ const StudentFormModal: React.FC<StudentFormModalProps> = ({
 
       await onSubmit({
         fullName: fullName.trim(),
+        nickname: nickname.trim() || undefined,
         classLevel,
         board,
         schoolName: schoolName.trim(),
@@ -911,12 +943,12 @@ const StudentFormModal: React.FC<StudentFormModalProps> = ({
         parentPhone: parentPhone.trim(),
         preferredArrivalTime,
         allocatedSlot: `${preferredArrivalTime}–${workspace.settings.sessionEnd}`,
-        expectedDurationMinutes,
+        expectedDurationMinutes: Number(expectedDurationMinutes) || 120,
         feeDueDay,
         learningSpeed,
         priority,
-        subjects: subjectsText.split(',').map((s) => s.trim()).filter(Boolean),
-        weaknesses: weaknessesText.split(',').map((s) => s.trim()).filter(Boolean),
+        subjects: subjectsText.trim() ? subjectsText.split(',').map((s) => s.trim()).filter(Boolean) : ['All Subjects'],
+        weaknesses: weaknessesText.trim() ? weaknessesText.split(',').map((s) => s.trim()).filter(Boolean) : [],
         academicGoals: academicGoals.trim(),
         notes: notes.trim(),
         feeOverride,
@@ -968,20 +1000,20 @@ const StudentFormModal: React.FC<StudentFormModalProps> = ({
               required
               value={fullName}
               onChange={(e) => setFullName(e.target.value)}
-              placeholder="e.g. Aarav Verma"
-              className="w-full px-3 py-2 rounded-xl bg-white/80 dark:bg-black border border-sky-200/80 dark:border-white/20 text-sm text-slate-900 dark:text-white"
+              placeholder="e.g. Aditya, Arjun, Ishika"
+              className="w-full px-3 py-2 rounded-xl bg-white/80 dark:bg-black border border-sky-200/80 dark:border-white/20 text-sm font-semibold text-slate-900 dark:text-white"
             />
           </div>
           <div>
-            <label htmlFor="stu-school" className="block text-xs font-medium text-slate-700 dark:text-neutral-300 mb-1">
-              School Name
+            <label htmlFor="stu-nickname" className="block text-xs font-medium text-slate-700 dark:text-neutral-300 mb-1">
+              Nickname <span className="text-[10px] text-sky-600 dark:text-sky-400 font-normal">(Shown prominently on top)</span>
             </label>
             <input
-              id="stu-school"
-              value={schoolName}
-              onChange={(e) => setSchoolName(e.target.value)}
-              placeholder="e.g. Kendriya Vidyalaya"
-              className="w-full px-3 py-2 rounded-xl bg-white/80 dark:bg-black border border-sky-200/80 dark:border-white/20 text-sm text-slate-900 dark:text-white"
+              id="stu-nickname"
+              value={nickname}
+              onChange={(e) => setNickname(e.target.value)}
+              placeholder="e.g. Adi, Abi, Pandu"
+              className="w-full px-3 py-2 rounded-xl bg-white/80 dark:bg-black border border-sky-200/80 dark:border-white/20 text-sm font-bold text-sky-700 dark:text-sky-300"
             />
           </div>
           <div>
@@ -1015,34 +1047,48 @@ const StudentFormModal: React.FC<StudentFormModalProps> = ({
             </select>
           </div>
           <div>
-            <label htmlFor="stu-parent" className="block text-xs font-medium text-slate-700 dark:text-neutral-300 mb-1">
-              Parent / Guardian Name *
+            <label htmlFor="stu-due" className="block text-xs font-medium text-slate-700 dark:text-neutral-300 mb-1">
+              Monthly Payment Date
             </label>
-            <input
-              id="stu-parent"
-              required
-              value={parentName}
-              onChange={(e) => setParentName(e.target.value)}
-              placeholder="e.g. Rajesh Verma"
-              className="w-full px-3 py-2 rounded-xl bg-white/80 dark:bg-black border border-sky-200/80 dark:border-white/20 text-sm text-slate-900 dark:text-white"
-            />
+            <select
+              id="stu-due"
+              value={feeDueDay}
+              onChange={(e) => setFeeDueDay(Number(e.target.value))}
+              className="w-full px-3 py-2 rounded-xl bg-white/80 dark:bg-black border border-sky-200/80 dark:border-white/20 text-sm font-medium text-slate-900 dark:text-white"
+            >
+              {[...Array(28)].map((_, i) => {
+                const day = i + 1;
+                const suffix = day === 1 || day === 21 ? 'st' : day === 2 || day === 22 ? 'nd' : day === 3 || day === 23 ? 'rd' : 'th';
+                return (
+                  <option key={day} value={day}>
+                    Payment on {day}{suffix} of every month {day === 5 ? '(Default)' : ''}
+                  </option>
+                );
+              })}
+            </select>
+            <p className="text-[10px] text-slate-500 dark:text-neutral-400 mt-0.5">
+              🔔 Reminder alert sent 1 day before on desktop & mobile
+            </p>
           </div>
           <div>
-            <label htmlFor="stu-phone" className="block text-xs font-medium text-slate-700 dark:text-neutral-300 mb-1">
-              Parent Phone *
+            <label htmlFor="stu-dur" className="block text-xs font-medium text-slate-700 dark:text-neutral-300 mb-1">
+              Tuition Duration
             </label>
-            <input
-              id="stu-phone"
-              required
-              value={parentPhone}
-              onChange={(e) => setParentPhone(e.target.value)}
-              placeholder="e.g. 9876543210"
-              className="w-full px-3 py-2 rounded-xl bg-white/80 dark:bg-black border border-sky-200/80 dark:border-white/20 text-sm font-mono text-slate-900 dark:text-white"
-            />
+            <select
+              id="stu-dur"
+              value={expectedDurationMinutes}
+              onChange={(e) => setExpectedDurationMinutes(Number(e.target.value))}
+              className="w-full px-3 py-2 rounded-xl bg-white/80 dark:bg-black border border-sky-200/80 dark:border-white/20 text-sm font-medium text-slate-900 dark:text-white"
+            >
+              <option value={120}>2 hours (120 mins) — Default</option>
+              <option value={90}>1.5 hours (90 mins)</option>
+              <option value={60}>1 hour (60 mins)</option>
+              <option value={150}>2.5 hours (150 mins)</option>
+            </select>
           </div>
           <div>
             <label htmlFor="stu-arrival" className="block text-xs font-medium text-slate-700 dark:text-neutral-300 mb-1">
-              Preferred Arrival Time (IST)
+              Arrival Time (IST)
             </label>
             <input
               id="stu-arrival"
@@ -1052,86 +1098,51 @@ const StudentFormModal: React.FC<StudentFormModalProps> = ({
               className="w-full px-3 py-2 rounded-xl bg-white/80 dark:bg-black border border-sky-200/80 dark:border-white/20 text-sm font-mono text-slate-900 dark:text-white"
             />
           </div>
-          <div className="grid grid-cols-2 gap-2">
-            <div>
-              <label htmlFor="stu-dur" className="block text-xs font-medium text-slate-700 dark:text-neutral-300 mb-1">
-                Duration (min)
-              </label>
-              <input
-                id="stu-dur"
-                type="number"
-                min={30}
-                max={180}
-                value={expectedDurationMinutes}
-                onChange={(e) => setExpectedDurationMinutes(Number(e.target.value))}
-                className="w-full px-3 py-2 rounded-xl bg-white/80 dark:bg-black border border-sky-200/80 dark:border-white/20 text-sm font-mono text-slate-900 dark:text-white"
-              />
-            </div>
-            <div>
-              <label htmlFor="stu-due" className="block text-xs font-medium text-slate-700 dark:text-neutral-300 mb-1">
-                Fee Due Day
-              </label>
-              <input
-                id="stu-due"
-                type="number"
-                min={1}
-                max={28}
-                value={feeDueDay}
-                onChange={(e) => setFeeDueDay(Number(e.target.value))}
-                className="w-full px-3 py-2 rounded-xl bg-white/80 dark:bg-black border border-sky-200/80 dark:border-white/20 text-sm font-mono text-slate-900 dark:text-white"
-              />
-            </div>
-          </div>
           <div>
-            <label htmlFor="stu-speed" className="block text-xs font-medium text-slate-700 dark:text-neutral-300 mb-1">
-              Learning Speed
-            </label>
-            <select
-              id="stu-speed"
-              value={learningSpeed}
-              onChange={(e) => setLearningSpeed(e.target.value as LearningSpeed)}
-              className="w-full px-3 py-2 rounded-xl bg-white/80 dark:bg-black border border-sky-200/80 dark:border-white/20 text-sm text-slate-900 dark:text-white"
-            >
-              <option value="fast">Fast / Independent</option>
-              <option value="steady">Steady</option>
-              <option value="needs_support">Needs Extra Support</option>
-            </select>
-          </div>
-          <div>
-            <label htmlFor="stu-priority" className="block text-xs font-medium text-slate-700 dark:text-neutral-300 mb-1">
-              Teaching Priority
-            </label>
-            <select
-              id="stu-priority"
-              value={priority}
-              onChange={(e) => setPriority(e.target.value as StudentPriority)}
-              className="w-full px-3 py-2 rounded-xl bg-white/80 dark:bg-black border border-sky-200/80 dark:border-white/20 text-sm text-slate-900 dark:text-white"
-            >
-              <option value="high">High</option>
-              <option value="normal">Normal</option>
-              <option value="low">Low</option>
-            </select>
-          </div>
-          <div>
-            <label htmlFor="stu-subjects" className="block text-xs font-medium text-slate-700 dark:text-neutral-300 mb-1">
-              Subjects (comma-separated)
+            <label htmlFor="stu-school" className="block text-xs font-medium text-slate-700 dark:text-neutral-300 mb-1">
+              School Name (Optional)
             </label>
             <input
-              id="stu-subjects"
-              value={subjectsText}
-              onChange={(e) => setSubjectsText(e.target.value)}
+              id="stu-school"
+              value={schoolName}
+              onChange={(e) => setSchoolName(e.target.value)}
+              placeholder="e.g. Kendriya Vidyalaya"
               className="w-full px-3 py-2 rounded-xl bg-white/80 dark:bg-black border border-sky-200/80 dark:border-white/20 text-sm text-slate-900 dark:text-white"
             />
           </div>
           <div>
-            <label htmlFor="stu-weak" className="block text-xs font-medium text-slate-700 dark:text-neutral-300 mb-1">
-              Weak Topics (comma-separated)
+            <label htmlFor="stu-parent" className="block text-xs font-medium text-slate-700 dark:text-neutral-300 mb-1">
+              Parent / Guardian Name (Optional)
             </label>
             <input
-              id="stu-weak"
-              value={weaknessesText}
-              onChange={(e) => setWeaknessesText(e.target.value)}
-              placeholder="e.g. Fractions, Algebra"
+              id="stu-parent"
+              value={parentName}
+              onChange={(e) => setParentName(e.target.value)}
+              placeholder="Optional"
+              className="w-full px-3 py-2 rounded-xl bg-white/80 dark:bg-black border border-sky-200/80 dark:border-white/20 text-sm text-slate-900 dark:text-white"
+            />
+          </div>
+          <div>
+            <label htmlFor="stu-phone" className="block text-xs font-medium text-slate-700 dark:text-neutral-300 mb-1">
+              Parent Phone (Optional)
+            </label>
+            <input
+              id="stu-phone"
+              value={parentPhone}
+              onChange={(e) => setParentPhone(e.target.value)}
+              placeholder="Optional"
+              className="w-full px-3 py-2 rounded-xl bg-white/80 dark:bg-black border border-sky-200/80 dark:border-white/20 text-sm font-mono text-slate-900 dark:text-white"
+            />
+          </div>
+          <div className="sm:col-span-2">
+            <label htmlFor="stu-goals" className="block text-xs font-medium text-slate-700 dark:text-neutral-300 mb-1">
+              Academic Goals (Optional)
+            </label>
+            <input
+              id="stu-goals"
+              value={academicGoals}
+              onChange={(e) => setAcademicGoals(e.target.value)}
+              placeholder="e.g. Aiming for 90%+ in final exams"
               className="w-full px-3 py-2 rounded-xl bg-white/80 dark:bg-black border border-sky-200/80 dark:border-white/20 text-sm text-slate-900 dark:text-white"
             />
           </div>

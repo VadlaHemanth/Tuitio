@@ -132,6 +132,9 @@ function jsonResponse(data: unknown, status = 200, headers: Record<string, strin
     headers: {
       'Content-Type': 'application/json; charset=utf-8',
       'X-Content-Type-Options': 'nosniff',
+      'Access-Control-Allow-Origin': '*',
+      'Access-Control-Allow-Methods': 'GET, POST, PUT, DELETE, OPTIONS, PATCH',
+      'Access-Control-Allow-Headers': 'Content-Type, Authorization, X-Requested-With',
       ...headers,
     },
   });
@@ -607,6 +610,19 @@ export default {
     const url = new URL(request.url);
     const method = request.method.toUpperCase();
 
+    // CORS preflight handling for web client
+    if (method === 'OPTIONS') {
+      return new Response(null, {
+        status: 204,
+        headers: {
+          'Access-Control-Allow-Origin': '*',
+          'Access-Control-Allow-Methods': 'GET, POST, PUT, DELETE, OPTIONS, PATCH',
+          'Access-Control-Allow-Headers': 'Content-Type, Authorization, X-Requested-With',
+          'Access-Control-Allow-Credentials': 'true',
+        },
+      });
+    }
+
     // Health check endpoint
     if (url.pathname === '/api/health') {
       try {
@@ -817,8 +833,8 @@ export default {
       return jsonResponse({ id, snapshot: snap, ...snap }, 201);
     }
 
-    const studentIdMatch = url.pathname.match(/^\/api\/students\/([^/]+)$/);
-    if (studentIdMatch && method === 'PUT') {
+    const studentIdMatch = url.pathname.match(/^\/api\/students\/([^/]+)\/?$/);
+    if (studentIdMatch && (method === 'PUT' || method === 'POST')) {
       const id = studentIdMatch[1];
       const body = (await request.json().catch(() => ({}))) as Record<string, unknown>;
       const existing = await env.DB.prepare('SELECT * FROM students WHERE id = ?').bind(id).first<Record<string, unknown>>();
@@ -1418,7 +1434,12 @@ export default {
       return jsonResponse(saved);
     }
 
-    // Fallback: If no custom API route matched, forward to static assets
+    // Fallback: If url is under /api/ and wasn't handled, return 404 JSON (NOT static asset 405)
+    if (url.pathname.startsWith('/api/')) {
+      return errorResponse(`API endpoint not found: ${method} ${url.pathname}`, 404);
+    }
+
+    // Forward non-API requests to static assets
     return env.ASSETS.fetch(request);
   },
 

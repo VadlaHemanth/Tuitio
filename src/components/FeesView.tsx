@@ -321,14 +321,24 @@ export const FeesView: React.FC<FeesViewProps> = ({
                   return (
                     <tr key={inv.id} className="hover:bg-sky-50/50 dark:hover:bg-white/5">
                       <td className="py-3 pr-4">
-                        <p className="font-semibold text-slate-900 dark:text-white">{stu?.fullName ?? 'Student'}</p>
+                        <p className="font-semibold text-slate-900 dark:text-white">
+                          {stu?.nickname ? (
+                            <span>
+                              <span className="font-bold text-sky-700 dark:text-sky-300">{stu.nickname}</span>
+                              <span className="text-xs font-normal text-slate-500 dark:text-neutral-400 ml-1.5">({stu.fullName})</span>
+                            </span>
+                          ) : (
+                            stu?.fullName ?? 'Student'
+                          )}
+                        </p>
                         <p className="text-xs text-slate-500 dark:text-neutral-400">
                           Class {inv.classLevelSnapshot} · {inv.boardSnapshot}
                           {inv.discountSummary ? ` · ${inv.discountSummary}` : ''}
                         </p>
                       </td>
                       <td className="py-3 px-3 font-mono tabular-nums text-xs text-slate-600 dark:text-neutral-400 whitespace-nowrap">
-                        {inv.dueDate}
+                        <div>{inv.dueDate}</div>
+                        <div className="text-[10px] text-sky-700 dark:text-sky-400 font-sans">Monthly payment date: {stu?.feeDueDay ?? 5}th</div>
                       </td>
                       <td className="py-3 px-3 text-right font-mono tabular-nums text-xs font-medium text-slate-900 dark:text-white">
                         {formatRupeesFromPaise(inv.totalAmountPaise)}

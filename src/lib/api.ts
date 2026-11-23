@@ -86,6 +86,11 @@ export async function apiRequest<T>(
       body: body !== undefined ? JSON.stringify(body) : undefined,
     });
 
+    if (res.status === 405 && method === 'PUT') {
+      // Gracefully fall back to POST if proxy/CDN or web server forbids PUT
+      return apiRequest<T>(url, { ...options, method: 'POST' });
+    }
+
     const data = await res.json().catch(() => ({}));
     if (!res.ok) {
       const msg = (data as { error?: string }).error || `Request failed (${res.status})`;

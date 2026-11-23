@@ -416,7 +416,7 @@ async function startServer() {
     res.status(201).json({ id, snapshot: getWorkspaceSnapshot() });
   });
 
-  app.put('/api/students/:id', (req, res) => {
+  const handleUpdateStudent = (req: express.Request, res: express.Response) => {
     const parsed = studentPayloadSchema.partial().safeParse(req.body);
     if (!parsed.success) {
       return res.status(400).json({ error: 'Invalid student update payload.' });
@@ -492,8 +492,12 @@ async function startServer() {
     );
 
     logAudit('UPDATE_STUDENT', 'student', req.params.id, `Updated profile for ${d.fullName ?? existing.full_name}`);
-    res.json(getWorkspaceSnapshot());
-  });
+    const snap = getWorkspaceSnapshot();
+    res.json({ snapshot: snap, ...snap });
+  };
+
+  app.put('/api/students/:id', handleUpdateStudent);
+  app.post('/api/students/:id', handleUpdateStudent);
 
   app.post('/api/students/:id/status', (req, res) => {
     const schema = z.object({

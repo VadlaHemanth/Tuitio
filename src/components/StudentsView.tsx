@@ -269,9 +269,26 @@ export const StudentsView: React.FC<StudentsViewProps> = ({
                     <dt className="text-slate-500 dark:text-neutral-400">Learning Speed & Priority</dt>
                     <dd className="capitalize text-slate-900 dark:text-white">{selectedStudent.learningSpeed.replace('_', ' ')} · {selectedStudent.priority}</dd>
                   </div>
-                  <div className="flex justify-between py-1.5 border-b border-sky-100/70 dark:border-white/10">
-                    <dt className="text-slate-500 dark:text-neutral-400">Fee Due Day</dt>
-                    <dd className="font-mono text-slate-900 dark:text-white">Day {selectedStudent.feeDueDay} of every month</dd>
+                  <div className="p-3 my-2 rounded-2xl bg-sky-50 dark:bg-sky-950/40 border border-sky-200 dark:border-sky-800 flex items-center justify-between">
+                    <div>
+                      <span className="text-[10px] font-bold uppercase tracking-wider text-sky-700 dark:text-sky-300 block">Monthly Fee Payment Date</span>
+                      <p className="text-sm font-bold text-slate-900 dark:text-white mt-0.5">
+                        Payment on {selectedStudent.feeDueDay}{selectedStudent.feeDueDay === 1 || selectedStudent.feeDueDay === 21 ? 'st' : selectedStudent.feeDueDay === 2 || selectedStudent.feeDueDay === 22 ? 'nd' : selectedStudent.feeDueDay === 3 || selectedStudent.feeDueDay === 23 ? 'rd' : 'th'} of every month
+                      </p>
+                      <p className="text-[11px] text-sky-700 dark:text-sky-400 mt-0.5">
+                        🔔 Notification sent 1 day before (on day {selectedStudent.feeDueDay > 1 ? selectedStudent.feeDueDay - 1 : 28})
+                      </p>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setEditingStudent(selectedStudent);
+                        setShowFormModal(true);
+                      }}
+                      className="px-3 py-1.5 rounded-xl text-xs font-semibold bg-sky-600 hover:bg-sky-700 text-white shrink-0 ml-2"
+                    >
+                      Change Date
+                    </button>
                   </div>
                   <div className="flex justify-between py-1.5">
                     <dt className="text-slate-500 dark:text-neutral-400">Address / Emergency</dt>
@@ -746,7 +763,9 @@ export const StudentsView: React.FC<StudentsViewProps> = ({
                     </td>
                     <td className="py-3 px-3 text-xs text-slate-700 dark:text-neutral-300 whitespace-nowrap">
                       Class {s.classLevel} · {s.board}
-                      <span className="block text-slate-400 dark:text-neutral-500 capitalize">{s.status}</span>
+                      <span className="block text-[11px] font-medium text-sky-700 dark:text-sky-300">
+                        Payment: {s.feeDueDay}{s.feeDueDay === 1 || s.feeDueDay === 21 ? 'st' : s.feeDueDay === 2 || s.feeDueDay === 22 ? 'nd' : s.feeDueDay === 3 || s.feeDueDay === 23 ? 'rd' : 'th'} of month
+                      </span>
                     </td>
                     <td className="py-3 px-3 font-mono tabular-nums text-xs text-slate-700 dark:text-neutral-300 whitespace-nowrap">
                       {formatHHMMTo12Hour(s.preferredArrivalTime)}
@@ -765,7 +784,17 @@ export const StudentsView: React.FC<StudentsViewProps> = ({
                       )}
                     </td>
                     <td className="py-3 pl-3 text-right whitespace-nowrap">
-                      <div className="inline-flex items-center gap-2">
+                      <div className="inline-flex items-center gap-3">
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setEditingStudent(s);
+                            setShowFormModal(true);
+                          }}
+                          className="text-xs font-semibold text-slate-700 dark:text-neutral-300 hover:text-sky-700 dark:hover:text-white hover:underline"
+                        >
+                          Edit
+                        </button>
                         <button
                           type="button"
                           onClick={() => {
@@ -1046,15 +1075,20 @@ const StudentFormModal: React.FC<StudentFormModalProps> = ({
               <option value="ICSE">ICSE</option>
             </select>
           </div>
-          <div>
-            <label htmlFor="stu-due" className="block text-xs font-medium text-slate-700 dark:text-neutral-300 mb-1">
-              Monthly Payment Date
-            </label>
+          <div className="sm:col-span-2 p-3.5 rounded-2xl bg-sky-50/80 dark:bg-sky-950/40 border-2 border-sky-300 dark:border-sky-700">
+            <div className="flex items-center justify-between mb-1.5">
+              <label htmlFor="stu-due" className="block text-xs font-bold text-sky-950 dark:text-sky-200">
+                📅 Monthly Fee Payment Date (Select day of month)
+              </label>
+              <span className="text-[11px] font-semibold text-sky-700 dark:text-sky-300 bg-sky-100 dark:bg-sky-900/60 px-2 py-0.5 rounded-lg">
+                1-Day Advance Reminder
+              </span>
+            </div>
             <select
               id="stu-due"
               value={feeDueDay}
               onChange={(e) => setFeeDueDay(Number(e.target.value))}
-              className="w-full px-3 py-2 rounded-xl bg-white/80 dark:bg-black border border-sky-200/80 dark:border-white/20 text-sm font-medium text-slate-900 dark:text-white"
+              className="w-full px-3.5 py-2.5 rounded-xl bg-white dark:bg-black border border-sky-300 dark:border-sky-600 text-sm font-bold text-slate-900 dark:text-white focus:ring-2 focus:ring-sky-500"
             >
               {[...Array(28)].map((_, i) => {
                 const day = i + 1;
@@ -1066,8 +1100,8 @@ const StudentFormModal: React.FC<StudentFormModalProps> = ({
                 );
               })}
             </select>
-            <p className="text-[10px] text-slate-500 dark:text-neutral-400 mt-0.5">
-              🔔 Reminder alert sent 1 day before on desktop & mobile
+            <p className="text-xs text-sky-800 dark:text-sky-300 mt-1.5 font-medium flex items-center gap-1">
+              🔔 Reminder alert sent automatically 1 day before on desktop & mobile (on day {feeDueDay > 1 ? feeDueDay - 1 : 28})
             </p>
           </div>
           <div>

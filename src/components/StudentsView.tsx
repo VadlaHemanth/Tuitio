@@ -260,7 +260,7 @@ export const StudentsView: React.FC<StudentsViewProps> = ({
                     <div>
                       <span className="text-[10px] font-bold uppercase tracking-wider text-sky-700 dark:text-sky-300 block">Monthly Fee Payment Date</span>
                       <p className="text-sm font-bold text-slate-900 dark:text-white mt-0.5">
-                        Payment on {formatOrdinal(selectedStudent.feeDueDay)} of every month
+                        Each month’s fee is due on the {formatOrdinal(selectedStudent.feeDueDay)} of the following month
                       </p>
                       <p className="text-[11px] text-sky-700 dark:text-sky-400 mt-0.5">
                         🔔 Notification sent 1 day before (on day {selectedStudent.feeDueDay > 1 ? selectedStudent.feeDueDay - 1 : 28})
@@ -839,7 +839,7 @@ const StudentFormModal: React.FC<StudentFormModalProps> = ({
   const [board, setBoard] = useState<BoardType>(initialStudent?.board ?? 'CBSE');
   const [schoolName, setSchoolName] = useState(initialStudent?.schoolName ?? '');
   const [preferredArrivalTime, setPreferredArrivalTime] = useState(initialStudent?.preferredArrivalTime ?? workspace.settings.sessionStart);
-  const [feeDueDay, setFeeDueDay] = useState(initialStudent?.feeDueDay ?? workspace.settings.feeConfig.defaultDueDay);
+  const [feeDueDay, setFeeDueDay] = useState(initialStudent?.feeDueDay ?? Number(workspace.todayIst.slice(8)));
   const [learningSpeed, setLearningSpeed] = useState<LearningSpeed>(initialStudent?.learningSpeed ?? 'steady');
   const [priority, setPriority] = useState<StudentPriority>(initialStudent?.priority ?? 'normal');
   const [academicGoals, setAcademicGoals] = useState(initialStudent?.academicGoals ?? '');
@@ -1044,7 +1044,7 @@ const StudentFormModal: React.FC<StudentFormModalProps> = ({
                 ))}
               </select>
               <p id="stu-due-help" className="mt-1.5 text-xs text-slate-600 dark:text-neutral-400">
-                Reminder one day before.{feeDueDay > 28 && ' In shorter months, payment is due on the last day.'}
+                Each month’s fee is due the following month.{feeDueDay > 28 && ' Shorter months use their last day.'}
               </p>
             </div>
             <div>

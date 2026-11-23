@@ -7,6 +7,7 @@ import {
   buildNextDayFeeReminders,
   calculateStudentMonthlyFee,
   evaluateFeeReminders,
+  getEarlierBalances,
   getStandardClassBoardFeePaise,
   previewStudentPromotion,
 } from './feeEngine';
@@ -64,29 +65,65 @@ const DEFAULT_REMINDERS: ReminderSettings = {
   feeMessageTemplate: 'Reminder for {{studentName}}: {{amount}} due on {{dueDate}}.',
 };
 
-test('next-day fee alerts cross month boundaries, respect invoices, and work before billing', () => {
+test('next-day alerts use actual invoices and follow the next-month payment date', () => {
   const dueFirst = makeStudent({ feeDueDay: 1, nickname: 'Ro' });
   const paid = makeStudent({ id: 'paid', feeDueDay: 1 });
   const paused = makeStudent({ id: 'paused', feeDueDay: 1, status: 'paused' });
-  const paidDraft = buildMonthlyInvoiceDraft({
-    student: paid, monthKey: '2026-12', feeConfig: DEFAULT_FEE_CONFIG,
-    existingInvoices: [], discounts: [], todayDate: '2026-11-30',
-  })!;
+  const invoiceFor = (student: Student, monthKey: string): FeeInvoice => ({
+    ...buildMonthlyInvoiceDraft({ student, monthKey, feeConfig: DEFAULT_FEE_CONFIG, existingInvoices: [], discounts: [], todayDate: '2026-11-30' })!,
+    id: student.id, createdAt: '', updatedAt: '',
+  });
   const options = {
-    students: [dueFirst, paid, paused], discounts: [], feeConfig: DEFAULT_FEE_CONFIG,
-    invoices: [{ ...paidDraft, id: 'invoice', status: 'paid' as const, createdAt: '', updatedAt: '' }],
+    students: [dueFirst, paid, paused],
+    invoices: [invoiceFor(dueFirst, '2026-11'), { ...invoiceFor(paid, '2026-11'), paidAmountPaise: 90_000, status: 'paid' as const }],
   };
   assert.equal(buildNextDayFeeReminders({ ...options, todayDate: '2026-11-29' }).length, 0);
+  assert.equal(buildNextDayFeeReminders({ ...options, invoices: [], todayDate: '2026-11-30' }).length, 0);
   const alerts = buildNextDayFeeReminders({ ...options, todayDate: '2026-11-30' });
   assert.equal(alerts.length, 1);
   assert.equal(alerts[0].studentId, dueFirst.id);
   assert.match(alerts[0].title, /^Ro \(Rohan Kulkarni\)/);
   assert.match(alerts[0].message, /2026-12-01/);
 
-  const monthEnd = buildNextDayFeeReminders({
-    ...options, students: [makeStudent({ feeDueDay: 31 })], invoices: [], todayDate: '2027-02-27',
+  const monthEnd = makeStudent({ feeDueDay: 31 });
+  const shorterMonthAlerts = buildNextDayFeeReminders({
+    students: [monthEnd], invoices: [invoiceFor(monthEnd, '2027-01')], todayDate: '2027-02-27',
   });
-  assert.match(monthEnd[0].message, /2027-02-28/);
+  assert.match(shorterMonthAlerts[0].message, /2027-02-28/);
+});
+
+test('an earlier partial bill carries its remaining amount and follows its edited due date', () => {
+  const student = makeStudent({ feeDueDay: 5 });
+  const context = { student, feeConfig: DEFAULT_FEE_CONFIG, discounts: [], existingInvoices: [], todayDate: '2027-01-04' };
+  const november = buildMonthlyInvoiceDraft({ ...context, monthKey: '2026-11' })!;
+  const december = buildMonthlyInvoiceDraft({ ...context, monthKey: '2026-12' })!;
+  const invoice: FeeInvoice = { ...november, id: 'nov', dueDate: '2027-01-05', paidAmountPaise: 25_000, status: 'partial', createdAt: '', updatedAt: '' };
+  const current: FeeInvoice = { ...december, id: 'dec', createdAt: '', updatedAt: '' };
+
+  assert.equal(getEarlierBalances([invoice, current], '2026-12').get(student.id), 65_000);
+  assert.equal(getEarlierBalances([{ ...invoice, status: 'waived' }, current], '2026-12').has(student.id), false);
+  const alerts = buildNextDayFeeReminders({ ...context, students: [student], invoices: [invoice, current] });
+  assert.equal(alerts.length, 2);
+  assert.match(alerts[0].message, /₹650 for Nov 2026/);
+  assert.match(alerts[1].message, /₹900 for Dec 2026/);
+
+  const payment = allocatePaymentToInvoices({ invoices: [current, invoice], paymentAmountPaise: 85_000, todayDate: context.todayDate });
+  assert.deepEqual(payment.allocations.map(({ invoiceId, appliedPaise }) => [invoiceId, appliedPaise]), [['nov', 65_000], ['dec', 20_000]]);
+});
+
+test('billing skips months before admission and charges January tuition on February’s selected payment day', () => {
+  const context = {
+    student: makeStudent({ admissionDate: '2026-11-19' }), feeConfig: DEFAULT_FEE_CONFIG,
+    discounts: [], existingInvoices: [], todayDate: '2026-11-19',
+  };
+  assert.equal(buildMonthlyInvoiceDraft({ ...context, monthKey: '2026-10' }), null);
+  assert.equal(buildMonthlyInvoiceDraft({ ...context, monthKey: '2026-11' })?.dueDate, '2026-12-05');
+  assert.equal(buildMonthlyInvoiceDraft({ ...context, monthKey: '2026-12' })?.dueDate, '2027-01-05');
+  const january = buildMonthlyInvoiceDraft({
+    ...context, student: makeStudent({ admissionDate: '2027-01-01', feeDueDay: 1 }), monthKey: '2027-01', todayDate: '2027-01-01',
+  });
+  assert.equal(january?.totalAmountPaise, 90_000);
+  assert.equal(january?.dueDate, '2027-02-01');
 });
 
 test('default class-wise SSC, CBSE, and ICSE fee matrix matches specification exactly', () => {
@@ -312,7 +349,7 @@ test('monthly invoice generation prevents duplicates, handles partial & advance 
   const remindersBefore = evaluateFeeReminders({
     students: [stu],
     invoices: [existing],
-    todayDate: '2026-11-02', // dueDate is 2026-11-05 -> 3 days before
+    todayDate: '2026-12-02', // dueDate is 2026-12-05 -> 3 days before
     reminderSettings: DEFAULT_REMINDERS,
     tuitionName: 'Tuitio',
   });
@@ -322,7 +359,7 @@ test('monthly invoice generation prevents duplicates, handles partial & advance 
   const remindersOverdue = evaluateFeeReminders({
     students: [stu],
     invoices: [existing],
-    todayDate: '2026-11-10', // 5 days overdue
+    todayDate: '2026-12-10', // 5 days overdue
     reminderSettings: DEFAULT_REMINDERS,
     tuitionName: 'Tuitio',
   });

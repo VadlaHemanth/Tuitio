@@ -7,7 +7,7 @@ const studentPayloadSchema = z.object({
   classLevel: z.number().int().min(3).max(10),
   board: z.enum(['SSC', 'CBSE', 'ICSE']),
   schoolName: z.string().trim().max(120),
-  admissionDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional(),
+  admissionDate: z.iso.date().optional(),
   dateOfBirth: z.string().optional(),
   studentPhone: z.string().max(25).optional(),
   parentName: z.string().trim().max(100),

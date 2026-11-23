@@ -1,3 +1,4 @@
+import { billingMonthSchema, feeReminderStatements, invoiceAdjustment, invoicePatchSchema, mapBillingInvoice, monthlyBillStatements, paymentReceiptColumns, paymentSchema, paymentStatements, type BillingStatement, type PaymentReceipt } from '../server/billing';
 // Cloudflare Worker Entrypoint — Complete Edge Runtime with D1 + Static Assets + Cron Triggers
 import { getPushKeys, pushEndpointSchema, pushSubscriptionSchema, sendFeePush } from './webPush';
 import { studentCreateSchema, studentPatchSchema } from '../server/studentPayload';
@@ -7,7 +8,6 @@ import type {
   DailyProgressLog,
   DiscountRule,
   ExamItem,
-  FeeInvoice,
   FeePayment,
   HomeworkItem,
   HomeworkTemplate,
@@ -19,13 +19,12 @@ import type {
   ClassLevel,
 } from '../src/types';
 import {
-  allocatePaymentToInvoices,
-  buildMonthlyInvoiceDraft,
   buildNextDayFeeReminders,
-  computeInvoiceStatus,
+  getInvoicePaymentDueDate,
+  invoiceBalance,
 } from '../src/engines/feeEngine';
 import { buildCarryForwardHomeworkDrafts } from '../src/engines/schedulerEngine';
-import { addDaysToDateStr, buildDueDateForMonth, formatIstDate, formatIstMonthKey, formatRupeesFromPaise } from '../src/engines/istDate';
+import { addDaysToDateStr, formatIstDate, formatIstMonthKey, formatRupeesFromPaise } from '../src/engines/istDate';
 import { buildDemoDataset, createDefaultSettings, createDefaultTemplates } from '../server/demoSeed';
 
 export interface Env {
@@ -35,16 +34,18 @@ export interface Env {
   TEACHER_ADMIN_PASSCODE?: string;
 }
 
+interface D1WriteResult { success: boolean; meta?: { changes?: number }; }
+
 export interface D1Statement {
   bind(...values: unknown[]): D1Statement;
   first<T = Record<string, unknown>>(): Promise<T | null>;
   all<T = Record<string, unknown>>(): Promise<{ results: T[] }>;
-  run(): Promise<{ success: boolean; meta?: { changes?: number } }>;
+  run(): Promise<D1WriteResult>;
 }
 
 export interface D1Database {
   prepare(query: string): D1Statement;
-  batch(statements: D1Statement[]): Promise<unknown[]>;
+  batch(statements: D1Statement[]): Promise<D1WriteResult[]>;
 }
 
 interface Fetcher {
@@ -249,7 +250,7 @@ async function ensureBootstrapDefaults(db: D1Database): Promise<void> {
   }
 }
 
-async function getBillingData(db: D1Database, invoiceMonth?: string) {
+async function getBillingData(db: D1Database, today: string, forSchedule = false) {
   const studentRows = (await db.prepare('SELECT * FROM students ORDER BY class_level ASC, full_name ASC').bind().all<Record<string, unknown>>()).results;
   const students: Student[] = studentRows.map((r) => ({
     id: String(r.id),
@@ -305,50 +306,38 @@ async function getBillingData(db: D1Database, invoiceMonth?: string) {
     createdAt: String(r.created_at),
   }));
 
-  const invoiceQuery = invoiceMonth
-    ? db.prepare('SELECT * FROM fee_invoices WHERE month_key = ?').bind(invoiceMonth)
+  const tomorrow = addDaysToDateStr(today, 1);
+  const invoiceQuery = forSchedule
+    ? db.prepare('SELECT * FROM fee_invoices WHERE month_key = ? OR due_date = ?').bind(today.slice(0, 7), tomorrow)
     : db.prepare('SELECT * FROM fee_invoices ORDER BY month_key DESC, due_date ASC');
   const invRows = (await invoiceQuery.all<Record<string, unknown>>()).results;
-  const invoices: FeeInvoice[] = invRows.map((r) => ({
-    id: String(r.id),
-    studentId: String(r.student_id),
-    monthKey: String(r.month_key),
-    classLevelSnapshot: Number(r.class_level_snapshot) as FeeInvoice['classLevelSnapshot'],
-    boardSnapshot: String(r.board_snapshot) as FeeInvoice['boardSnapshot'],
-    baseAmountPaise: Number(r.base_amount_paise),
-    boardSurchargePaise: Number(r.board_surcharge_paise),
-    overrideApplied: Number(r.override_applied) === 1,
-    discountPaise: Number(r.discount_paise),
-    discountSummary: String(r.discount_summary ?? ''),
-    totalAmountPaise: Number(r.total_amount_paise),
-    paidAmountPaise: Number(r.paid_amount_paise),
-    dueDate: String(r.due_date),
-    status: String(r.status) as FeeInvoice['status'],
-    notes: String(r.notes ?? ''),
-    isDemo: Number(r.is_demo) === 1,
-    createdAt: String(r.created_at),
-    updatedAt: String(r.updated_at),
-  }));
+  const invoices = invRows.map((row) => mapBillingInvoice(row, today));
 
   return { students, discounts, invoices };
+}
+
+async function runBillingBatch(db: D1Database, statements: BillingStatement[]) {
+  return db.batch(statements.map(({ sql, values }) => db.prepare(sql).bind(...values)));
+}
+
+async function ensureMonthlyBills(db: D1Database, billing: Awaited<ReturnType<typeof getBillingData>>, settings: TuitionSettings, month: string, today: string) {
+  const pairs = monthlyBillStatements({ ...billing, settings, todayIst: today }, month, () => generateId('inv'), new Date().toISOString());
+  let created = 0;
+  for (let start = 0; start < pairs.length; start += 10) {
+    const results = await runBillingBatch(db, pairs.slice(start, start + 10).flat());
+    created += results.reduce((count, result, index) => count + (index % 2 === 0 ? result.meta?.changes ?? 0 : 0), 0);
+  }
+  return { created, attempted: pairs.length > 0 };
 }
 
 async function reconcileFeeAlerts(
   db: D1Database,
   billing: Awaited<ReturnType<typeof getBillingData>>,
-  settings: TuitionSettings,
   today: string,
 ): Promise<number> {
-  const reminders = buildNextDayFeeReminders({ ...billing, feeConfig: settings.feeConfig, todayDate: today });
-  if (reminders.length > 0) {
-    const now = new Date().toISOString();
-    const statements = reminders.map((reminder) => db.prepare(`
-      INSERT OR IGNORE INTO notifications (
-        id, category, title, message, student_id, priority, dedup_key, scheduled_for, created_at
-      ) VALUES (?, 'fee_due', ?, ?, ?, 'high', ?, ?, ?)
-    `).bind(generateId('ntf'), reminder.title, reminder.message, reminder.studentId, reminder.dedupKey, today, now));
-    await db.batch(statements);
-  }
+  const reminders = buildNextDayFeeReminders({ students: billing.students, invoices: billing.invoices, todayDate: today });
+  const writes = feeReminderStatements(reminders, today, new Date().toISOString(), () => generateId('ntf'));
+  await runBillingBatch(db, writes);
   return reminders.length;
 }
 
@@ -358,7 +347,10 @@ async function getWorkspaceSnapshot(db: D1Database): Promise<WorkspaceSnapshot> 
   const currentMonthIst = formatIstMonthKey(nowTick);
   const settings = await getSettings(db);
 
-  const { students, discounts, invoices } = await getBillingData(db);
+  let billing = await getBillingData(db, todayIst);
+  const generated = await ensureMonthlyBills(db, billing, settings, currentMonthIst, todayIst);
+  if (generated.attempted) billing = await getBillingData(db, todayIst);
+  const { students, discounts, invoices } = billing;
   const attRows = (await db.prepare('SELECT * FROM attendance ORDER BY date DESC, updated_at DESC LIMIT 500').bind().all<Record<string, unknown>>()).results;
   const attendance: AttendanceRecord[] = attRows.map((r) => ({
     id: String(r.id),
@@ -441,6 +433,7 @@ async function getWorkspaceSnapshot(db: D1Database): Promise<WorkspaceSnapshot> 
     receiptNumber: String(r.receipt_number),
     notes: String(r.notes ?? ''),
     isAdvance: Number(r.is_advance) === 1,
+    allocations: r.allocations_json ? JSON.parse(String(r.allocations_json)) : undefined,
     isDemo: Number(r.is_demo) === 1,
     createdAt: String(r.created_at),
   }));
@@ -463,7 +456,7 @@ async function getWorkspaceSnapshot(db: D1Database): Promise<WorkspaceSnapshot> 
     updatedAt: String(r.updated_at),
   }));
 
-  await reconcileFeeAlerts(db, { students, discounts, invoices }, settings, todayIst);
+  await reconcileFeeAlerts(db, billing, todayIst);
   const notifRows = (await db.prepare('SELECT * FROM notifications ORDER BY created_at DESC LIMIT 80').bind().all<Record<string, unknown>>()).results;
   const notifications: NotificationItem[] = notifRows.map((r) => ({
     id: String(r.id),
@@ -816,8 +809,8 @@ async function handleRequest(request: Request, env: Env): Promise<Response> {
       const student = parsed.data;
       const id = generateId('stu');
       const now = new Date().toISOString();
-      const settings = await getSettings(env.DB);
-      const dueDay = student.feeDueDay ?? settings.feeConfig.defaultDueDay;
+      const admission = student.admissionDate ?? formatIstDate();
+      const dueDay = student.feeDueDay ?? Number(admission.slice(8));
 
       await env.DB.prepare(`
         INSERT INTO students (
@@ -834,7 +827,7 @@ async function handleRequest(request: Request, env: Env): Promise<Response> {
       `).bind(
         id, student.fullName, student.nickname || null, student.avatarColor ?? '#0284C7',
         student.classLevel, student.board, student.schoolName,
-        student.admissionDate ?? formatIstDate(), student.dateOfBirth ?? null,
+        admission, student.dateOfBirth ?? null,
         student.studentPhone ?? null, student.parentName, student.parentPhone,
         student.emergencyContact ?? null, student.address ?? null, JSON.stringify(student.subjects),
         JSON.stringify(student.strengths), JSON.stringify(student.weaknesses), student.academicPerformance,
@@ -909,10 +902,10 @@ async function handleRequest(request: Request, env: Env): Promise<Response> {
         const today = formatIstDate();
         const invoices = (await env.DB.prepare(`
           SELECT id, month_key FROM fee_invoices
-          WHERE student_id = ? AND month_key >= ? AND status IN ('unpaid', 'partial', 'overdue')
+          WHERE student_id = ? AND substr(due_date, 1, 7) >= ? AND due_date_overridden = 0 AND status IN ('unpaid', 'partial', 'overdue')
         `).bind(id, today.slice(0, 7)).all<{ id: string; month_key: string }>()).results;
         for (const invoice of invoices) {
-          const due = buildDueDateForMonth(invoice.month_key, student.feeDueDay);
+          const due = getInvoicePaymentDueDate(invoice.month_key, student.feeDueDay);
           statements.push(env.DB.prepare(`
             UPDATE fee_invoices
             SET due_date = ?, status = CASE
@@ -921,7 +914,7 @@ async function handleRequest(request: Request, env: Env): Promise<Response> {
               WHEN paid_amount_paise > 0 THEN 'partial'
               ELSE 'unpaid' END,
               updated_at = ?
-            WHERE id = ? AND due_date <> ? AND status IN ('unpaid', 'partial', 'overdue')
+            WHERE id = ? AND due_date <> ? AND due_date_overridden = 0 AND status IN ('unpaid', 'partial', 'overdue')
           `).bind(due, due, today, now, invoice.id, due));
         }
       }
@@ -1234,138 +1227,74 @@ async function handleRequest(request: Request, env: Env): Promise<Response> {
       return jsonResponse({ snapshot: snap, ...snap });
     }
 
-    // Fees: Month Generation
+    // Older clients can still request an existing billing month explicitly.
     if (url.pathname === '/api/fees/generate-month' && method === 'POST') {
-      const body = (await request.json().catch(() => ({}))) as Record<string, unknown>;
-      const monthKey = typeof body?.monthKey === 'string' && /^\d{4}-\d{2}$/.test(body.monthKey)
-        ? body.monthKey
-        : formatIstMonthKey(new Date());
-      const snap = await getWorkspaceSnapshot(env.DB);
-      const now = new Date().toISOString();
-      let created = 0;
-
-      for (const s of snap.students) {
-        if (s.status === 'discontinued' || s.status === 'graduated') continue;
-        const draft = buildMonthlyInvoiceDraft({
-          student: s,
-          monthKey,
-          feeConfig: snap.settings.feeConfig,
-          discounts: snap.discounts,
-          existingInvoices: snap.invoices,
-          todayDate: snap.todayIst,
-        });
-        if (!draft) continue;
-
-        await env.DB
-          .prepare(`
-            INSERT OR IGNORE INTO fee_invoices (
-              id, student_id, month_key, class_level_snapshot, board_snapshot, base_amount_paise,
-              board_surcharge_paise, override_applied, discount_paise, discount_summary,
-              total_amount_paise, paid_amount_paise, due_date, status, notes, is_demo, created_at, updated_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?)
-          `)
-          .bind(
-            generateId('inv'),
-            draft.studentId,
-            draft.monthKey,
-            draft.classLevelSnapshot,
-            draft.boardSnapshot,
-            draft.baseAmountPaise,
-            draft.boardSurchargePaise,
-            draft.overrideApplied ? 1 : 0,
-            draft.discountPaise,
-            draft.discountSummary,
-            draft.totalAmountPaise,
-            draft.paidAmountPaise,
-            draft.dueDate,
-            draft.status,
-            draft.notes,
-            now,
-            now,
-          )
-          .run();
-        created += 1;
-      }
-      const updatedSnap = await getWorkspaceSnapshot(env.DB);
-      return jsonResponse({ created, snapshot: updatedSnap, ...updatedSnap });
+      const body = await request.json().catch(() => ({})) as { monthKey?: unknown } | null;
+      const today = formatIstDate();
+      const month = billingMonthSchema.safeParse(body?.monthKey ?? today.slice(0, 7));
+      if (!month.success || month.data > today.slice(0, 7)) return errorResponse('Choose a current or previous billing month.');
+      const [billing, settings] = await Promise.all([getBillingData(env.DB, today), getSettings(env.DB)]);
+      const { created } = await ensureMonthlyBills(env.DB, billing, settings, month.data, today);
+      return jsonResponse({ created, snapshot: await getWorkspaceSnapshot(env.DB) });
     }
 
-    // 11. Fees - Record Payment
     if (url.pathname === '/api/fees/payments' && method === 'POST') {
-      const body = (await request.json().catch(() => ({}))) as Record<string, unknown>;
-      const studentId = String(body.studentId || '');
-      const amountPaise = Number(body.amountPaise || 0);
-      const snap = await getWorkspaceSnapshot(env.DB);
-      const student = snap.students.find((s) => s.id === studentId);
-      if (!student) return errorResponse('Student not found.', 404);
+      const parsed = paymentSchema.safeParse(await request.json().catch(() => null));
+      if (!parsed.success) return errorResponse('Invalid payment details.');
+      const payment = parsed.data;
+      const today = formatIstDate();
+      const findReceipt = (field: 'id' | 'idempotency_key', value: string) => env.DB
+        .prepare(`SELECT ${paymentReceiptColumns} FROM fee_payments WHERE ${field} = ?`).bind(value).first<PaymentReceipt>();
+      const [billing, settings] = await Promise.all([getBillingData(env.DB, today, true), getSettings(env.DB)]);
+      await ensureMonthlyBills(env.DB, billing, settings, today.slice(0, 7), today);
 
-      const studentInvoices = snap.invoices.filter((i) => i.studentId === studentId);
-      const alloc = allocatePaymentToInvoices({
-        invoices: studentInvoices,
-        paymentAmountPaise: amountPaise,
-        todayDate: snap.todayIst,
-        targetInvoiceId: body.invoiceId ? String(body.invoiceId) : undefined,
-      });
+      for (let attempt = 0; attempt < 3; attempt++) {
+        if (payment.idempotencyKey) {
+          const previous = await findReceipt('idempotency_key', payment.idempotencyKey);
+          if (previous) {
+            if (previous.student_id !== payment.studentId || previous.amount_paise !== payment.amountPaise) {
+              return errorResponse('This payment request was already used. Reopen Record payment and try again.', 409);
+            }
+            return jsonResponse({ paymentId: previous.id, receiptNumber: previous.receipt_number, snapshot: await getWorkspaceSnapshot(env.DB) });
+          }
+        }
+        const student = await env.DB.prepare('SELECT full_name, billing_revision FROM students WHERE id = ?')
+          .bind(payment.studentId).first<{ full_name: string; billing_revision: number }>();
+        if (!student) return errorResponse('Student not found.', 404);
+        const rows = (await env.DB.prepare('SELECT * FROM fee_invoices WHERE student_id = ?')
+          .bind(payment.studentId).all<Record<string, unknown>>()).results;
+        const invoices = rows.map((row) => mapBillingInvoice(row, today));
+        if (payment.invoiceId) {
+          const target = invoices.find((invoice) => invoice.id === payment.invoiceId);
+          if (!target) return errorResponse('Invoice not found for this student.', 404);
+          if (invoiceBalance(target) === 0) {
+            const previous = payment.idempotencyKey && await findReceipt('idempotency_key', payment.idempotencyKey);
+            if (previous) continue;
+            return errorResponse('This bill no longer has a balance. Open Record payment to update the selection.', 409);
+          }
+        }
 
-      const now = new Date().toISOString();
-      const payDate = body.paymentDate ? String(body.paymentDate) : snap.todayIst;
-      const payCount = await env.DB.prepare('SELECT COUNT(*) as c FROM fee_payments').bind().first<{ c: number }>();
-      const receiptNumber = `RCPT-${payDate.slice(0, 4)}-${String((payCount?.c ?? 0) + 101).padStart(4, '0')}`;
-      const paymentId = generateId('pay');
-
-      for (const a of alloc.allocations) {
-        await env.DB
-          .prepare('UPDATE fee_invoices SET paid_amount_paise = ?, status = ?, updated_at = ? WHERE id = ?')
-          .bind(a.newPaidPaise, a.newStatus, now, a.invoiceId)
-          .run();
+        const id = generateId('pay');
+        const results = await runBillingBatch(env.DB, paymentStatements(payment, invoices, student.billing_revision, id, today, new Date().toISOString()));
+        if (!results[0].meta?.changes) continue;
+        const receipt = await findReceipt('id', id);
+        if (!receipt) throw new Error('Recorded payment has no receipt.');
+        await logAudit(env.DB, 'RECORD_PAYMENT', 'payment', id, `Recorded ${formatRupeesFromPaise(payment.amountPaise)} for ${student.full_name} (${receipt.receipt_number})`);
+        return jsonResponse({ paymentId: id, receiptNumber: receipt.receipt_number, snapshot: await getWorkspaceSnapshot(env.DB) }, 201);
       }
-
-      if (alloc.remainingAdvanceCreditPaise > 0) {
-        await env.DB
-          .prepare('UPDATE students SET credit_balance_paise = credit_balance_paise + ?, updated_at = ? WHERE id = ?')
-          .bind(alloc.remainingAdvanceCreditPaise, now, studentId)
-          .run();
-      }
-
-      await env.DB
-        .prepare(`
-          INSERT INTO fee_payments (
-            id, invoice_id, student_id, amount_paise, payment_date, method, transaction_ref,
-            receipt_number, notes, is_advance, is_demo, created_at
-          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?)
-        `)
-        .bind(
-          paymentId,
-          alloc.allocations[0]?.invoiceId ?? (body.invoiceId ? String(body.invoiceId) : null),
-          studentId,
-          amountPaise,
-          payDate,
-          String(body.method || 'cash'),
-          String(body.transactionRef || ''),
-          receiptNumber,
-          String(body.notes || ''),
-          alloc.remainingAdvanceCreditPaise > 0 ? 1 : 0,
-          now,
-        )
-        .run();
-
-      await logAudit(env.DB, 'RECORD_PAYMENT', 'payment', paymentId, `Recorded payment of ${formatRupeesFromPaise(amountPaise)} for ${student.fullName} (${receiptNumber})`);
-      const updatedSnap = await getWorkspaceSnapshot(env.DB);
-      return jsonResponse({ receiptNumber, snapshot: updatedSnap, ...updatedSnap });
+      return errorResponse('The fee balance changed while saving. Please try again.', 409);
     }
 
-    const waiveMatch = url.pathname.match(/^\/api\/fees\/invoices\/([^/]+)\/waive$/);
-    if (waiveMatch && method === 'PUT') {
-      const id = waiveMatch[1];
-      const body = (await request.json().catch(() => ({}))) as Record<string, unknown>;
-      const inv = await env.DB.prepare('SELECT id, total_amount_paise, paid_amount_paise, due_date FROM fee_invoices WHERE id = ?').bind(id).first<{ id: string; total_amount_paise: number; paid_amount_paise: number; due_date: string }>();
-      if (!inv) return errorResponse('Invoice not found.', 404);
-
-      const waive = Boolean(body.waived);
-      const nextStatus = computeInvoiceStatus(inv.total_amount_paise, inv.paid_amount_paise, inv.due_date, formatIstDate(new Date()), waive);
-      await env.DB.prepare('UPDATE fee_invoices SET status = ?, updated_at = ? WHERE id = ?').bind(nextStatus, new Date().toISOString(), id).run();
-      const snap = await getWorkspaceSnapshot(env.DB);
-      return jsonResponse({ snapshot: snap, ...snap });
+    const invoiceMatch = url.pathname.match(/^\/api\/fees\/invoices\/([^/]+)(?:\/waive)?$/);
+    if (invoiceMatch && method === 'PUT') {
+      const patch = invoicePatchSchema.safeParse(await request.json().catch(() => null));
+      if (!patch.success) return errorResponse('Enter a valid due date or waiver status.');
+      const id = invoiceMatch[1];
+      const { sql, values } = invoiceAdjustment(id, patch.data, formatIstDate(), new Date().toISOString());
+      const result = await env.DB.prepare(sql).bind(...values).run();
+      if (!result.meta?.changes) return errorResponse('Invoice not found.', 404);
+      await logAudit(env.DB, 'INVOICE_ADJUST', 'invoice', id, 'Updated invoice due date or waiver');
+      return jsonResponse(await getWorkspaceSnapshot(env.DB));
     }
 
     // Discounts
@@ -1522,9 +1451,10 @@ export default {
           'Open Tuitio to review today’s plan, expected students, and fee reminders.', 'normal', ?, ?, ?)
       `).bind(`ntf-${today}`, `cron-prep:${today}`, `${today} 17:30`, new Date().toISOString()).run();
     }
-    const tomorrow = addDaysToDateStr(today, 1);
-    const [billing, settings] = await Promise.all([getBillingData(env.DB, tomorrow.slice(0, 7)), getSettings(env.DB)]);
-    const count = await reconcileFeeAlerts(env.DB, billing, settings, today);
+    let [billing, settings] = await Promise.all([getBillingData(env.DB, today, true), getSettings(env.DB)]);
+    const generated = await ensureMonthlyBills(env.DB, billing, settings, today.slice(0, 7), today);
+    if (generated.attempted) billing = await getBillingData(env.DB, today, true);
+    const count = await reconcileFeeAlerts(env.DB, billing, today);
     await sendFeePush(env.DB, today, count);
   },
 };

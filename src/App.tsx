@@ -24,7 +24,6 @@ import {
 import type {
   AttendanceStatus,
   BoardType,
-  PaymentMethod,
   ScheduleBlock,
   StudentStatus,
   TuitionSettings,
@@ -39,6 +38,7 @@ import {
   setAuthToken,
 } from './lib/api';
 import { generateDailyTuitionPlan } from './engines/schedulerEngine';
+import { formatIstMonthKey } from './engines/istDate';
 import { useTheme } from './hooks/useTheme';
 import { useOnlineStatus, usePWAInstall } from './hooks/usePWAInstall';
 import { AuthOnboarding } from './components/AuthOnboarding';
@@ -190,6 +190,21 @@ export default function App() {
       });
     }
   }, [isOnline, auth.authenticated, loadWorkspace, showToast]);
+
+  const loadedMonth = workspace?.currentMonthIst;
+  useEffect(() => {
+    if (!loadedMonth || !auth.authenticated || !isOnline) return;
+    const refreshBillingMonth = () => {
+      if (!document.hidden && formatIstMonthKey() !== loadedMonth) void loadWorkspace();
+    };
+    refreshBillingMonth();
+    const interval = window.setInterval(refreshBillingMonth, 60_000);
+    document.addEventListener('visibilitychange', refreshBillingMonth);
+    return () => {
+      window.clearInterval(interval);
+      document.removeEventListener('visibilitychange', refreshBillingMonth);
+    };
+  }, [auth.authenticated, isOnline, loadedMonth, loadWorkspace]);
 
   // Cmd/Ctrl + K Command Palette shortcut
   useEffect(() => {
@@ -647,38 +662,20 @@ export default function App() {
               workspace={workspace}
               initialPaymentStudentId={feePaymentStudentId}
               onClearInitialPaymentStudent={() => setFeePaymentStudentId(null)}
-              onGenerateMonth={async (monthKey) => {
-                const res = await apiRequest<any>(
-                  '/api/fees/generate-month',
-                  { method: 'POST', body: { monthKey } },
-                );
-                safeSetWorkspace(res);
-                return res?.created ?? 0;
-              }}
-              onRecordPayment={async (payload: {
-                studentId: string;
-                invoiceId?: string | null;
-                amountPaise: number;
-                method: PaymentMethod;
-                transactionRef: string;
-                notes: string;
-                idempotencyKey: string;
-              }) => {
-                const res = await apiRequest<any>(
+              onRecordPayment={async (payload) => {
+                const res = await apiRequest<{ receiptNumber: string; snapshot: WorkspaceSnapshot }>(
                   '/api/fees/payments',
                   { method: 'POST', body: payload },
                 );
                 safeSetWorkspace(res);
-                showToast('Payment recorded.');
-                return { receiptNumber: res?.receiptNumber };
+                showToast(`Payment recorded. Receipt ${res.receiptNumber} is ready.`);
               }}
-              onWaiveInvoice={async (invoiceId, waived) => {
-                const snap = await apiRequest<WorkspaceSnapshot>(`/api/fees/invoices/${invoiceId}/waive`, {
-                  method: 'PUT',
-                  body: { waived },
+              onEditInvoice={async (invoiceId, patch) => {
+                const snap = await apiRequest<WorkspaceSnapshot>(`/api/fees/invoices/${invoiceId}`, {
+                  method: 'PUT', body: patch,
                 });
-                setWorkspace(snap);
-                showToast(waived ? 'Invoice waived.' : 'Invoice restored.');
+                safeSetWorkspace(snap);
+                showToast(patch.waived === true ? 'Fee balance waived.' : patch.waived === false ? 'Fee balance restored.' : 'Due date updated.');
               }}
               onCreateDiscount={async (payload) => {
                 const snap = await apiRequest<WorkspaceSnapshot>('/api/discounts', {

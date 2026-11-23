@@ -213,6 +213,7 @@ export interface FeePayment {
   receiptNumber: string;
   notes: string;
   isAdvance: boolean;
+  allocations?: { monthKey: string; amountPaise: number }[];
   isDemo?: boolean;
   createdAt: string;
 }

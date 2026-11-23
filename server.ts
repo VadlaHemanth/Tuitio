@@ -3,12 +3,14 @@ import path from 'node:path';
 import express from 'express';
 import { createServer as createViteServer } from 'vite';
 import { z } from 'zod';
+import { billingMonthSchema, invoiceAdjustment, invoicePatchSchema, mapBillingInvoice, paymentReceiptColumns, paymentSchema, paymentStatements, type PaymentReceipt } from './server/billing';
 import { studentCreateSchema, studentPatchSchema } from './server/studentPayload';
 import {
   clearDemoWorkspace,
   createSession,
   db,
   deleteSession,
+  ensureLocalMonthlyBills,
   generateId,
   getSessionTeacher,
   getSettings,
@@ -17,16 +19,17 @@ import {
   hashPassword,
   logAudit,
   saveSettings,
+  runLocalBillingBatch,
   seedDemoWorkspace,
   verifyPassword,
 } from './server/db';
 import {
-  allocatePaymentToInvoices,
-  buildMonthlyInvoiceDraft,
+  getInvoicePaymentDueDate,
+  invoiceBalance,
   computeInvoiceStatus,
 } from './src/engines/feeEngine';
 import { buildCarryForwardHomeworkDrafts } from './src/engines/schedulerEngine';
-import { addDaysToDateStr, buildDueDateForMonth, formatIstDate, formatIstMonthKey, formatRupeesFromPaise } from './src/engines/istDate';
+import { addDaysToDateStr, formatIstDate, formatRupeesFromPaise } from './src/engines/istDate';
 import type { BoardType, ClassLevel, Student, TuitionSettings } from './src/types';
 
 const PORT = Number(process.env.PORT || 3000);
@@ -91,8 +94,6 @@ function clearSessionCookie(req: express.Request, res: express.Response) {
   res.setHeader('Set-Cookie', attrs.join('; '));
 }
 
-// Track payment idempotency keys in memory (and by receipt/tx ref) to prevent double-submit on retries
-const processedPaymentKeys = new Set<string>();
 
 async function startServer() {
   const app = express();
@@ -328,9 +329,10 @@ async function startServer() {
     const id = generateId('stu');
     const palette = ['#0284C7', '#0369A1', '#0EA5E9', '#075985', '#38BDF8'];
     const color = d.avatarColor ?? palette[parseInt(id.slice(-2), 16) % palette.length];
-    const dueDay = d.feeDueDay ?? getSettings().feeConfig.defaultDueDay;
+
     const now = new Date().toISOString();
-    const admDate = d.admissionDate || formatIstDate(new Date());
+    const admDate = d.admissionDate ?? formatIstDate();
+    const dueDay = d.feeDueDay ?? Number(admDate.slice(8));
 
     db.prepare(`
       INSERT INTO students (
@@ -465,11 +467,11 @@ async function startServer() {
         const today = formatIstDate();
         const invoices = db.prepare(`
           SELECT id, month_key, total_amount_paise, paid_amount_paise FROM fee_invoices
-          WHERE student_id = ? AND month_key >= ? AND status IN ('unpaid', 'partial', 'overdue')
+          WHERE student_id = ? AND substr(due_date, 1, 7) >= ? AND due_date_overridden = 0 AND status IN ('unpaid', 'partial', 'overdue')
         `).all(req.params.id, today.slice(0, 7));
         const update = db.prepare('UPDATE fee_invoices SET due_date = ?, status = ?, updated_at = ? WHERE id = ? AND due_date <> ?');
         for (const invoice of invoices) {
-          const due = buildDueDateForMonth(String(invoice.month_key), d.feeDueDay);
+          const due = getInvoicePaymentDueDate(String(invoice.month_key), d.feeDueDay);
           const status = computeInvoiceStatus(Number(invoice.total_amount_paise), Number(invoice.paid_amount_paise), due, today, false);
           update.run(due, status, now, invoice.id, due);
         }
@@ -902,178 +904,63 @@ async function startServer() {
 
   // --- FEES, DISCOUNTS & PAYMENTS ---
   app.post('/api/fees/generate-month', (req, res) => {
-    const monthKey = typeof req.body?.monthKey === 'string' && /^\d{4}-\d{2}$/.test(req.body.monthKey)
-      ? req.body.monthKey
-      : formatIstMonthKey(new Date());
-    const snap = getWorkspaceSnapshot();
-    const now = new Date().toISOString();
-    let created = 0;
-
-    const insertInv = db.prepare(`
-      INSERT OR IGNORE INTO fee_invoices (
-        id, student_id, month_key, class_level_snapshot, board_snapshot, base_amount_paise,
-        board_surcharge_paise, override_applied, discount_paise, discount_summary,
-        total_amount_paise, paid_amount_paise, due_date, status, notes, is_demo, created_at, updated_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-    `);
-
-    for (const s of snap.students) {
-      const draft = buildMonthlyInvoiceDraft({
-        student: s,
-        monthKey,
-        feeConfig: snap.settings.feeConfig,
-        discounts: snap.discounts,
-        existingInvoices: snap.invoices,
-        todayDate: snap.todayIst,
-      });
-      if (!draft) continue;
-
-      const invId = generateId('inv');
-      insertInv.run(
-        invId,
-        draft.studentId,
-        draft.monthKey,
-        draft.classLevelSnapshot,
-        draft.boardSnapshot,
-        draft.baseAmountPaise,
-        draft.boardSurchargePaise,
-        draft.overrideApplied ? 1 : 0,
-        draft.discountPaise,
-        draft.discountSummary,
-        draft.totalAmountPaise,
-        draft.paidAmountPaise,
-        draft.dueDate,
-        draft.status,
-        draft.notes ?? '',
-        draft.isDemo ? 1 : 0,
-        now,
-        now,
-      );
-
-      // Deduct applied credit from student credit balance
-      if (draft.paidAmountPaise > 0) {
-        db.prepare('UPDATE students SET credit_balance_paise = MAX(0, credit_balance_paise - ?), updated_at = ? WHERE id = ?').run(
-          draft.paidAmountPaise,
-          now,
-          s.id,
-        );
-      }
-      created += 1;
+    const today = formatIstDate();
+    const month = billingMonthSchema.safeParse(req.body?.monthKey ?? today.slice(0, 7));
+    if (!month.success || month.data > today.slice(0, 7)) {
+      return res.status(400).json({ error: 'Choose a current or previous billing month.' });
     }
-
-    if (created > 0) {
-      logAudit('GENERATE_INVOICES', 'invoice', monthKey, `Generated ${created} monthly invoices for ${monthKey}`);
-    }
+    const state = getWorkspaceSnapshot();
+    const created = ensureLocalMonthlyBills(state, month.data);
     res.json({ created, snapshot: getWorkspaceSnapshot() });
-  });
-
-  const paymentSchema = z.object({
-    studentId: z.string().min(1),
-    invoiceId: z.string().nullable().optional(),
-    amountPaise: z.number().int().positive(),
-    paymentDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional(),
-    method: z.enum(['cash', 'upi', 'bank_transfer', 'other']),
-    transactionRef: z.string().max(80).default(''),
-    notes: z.string().max(300).default(''),
-    idempotencyKey: z.string().max(80).optional(),
   });
 
   app.post('/api/fees/payments', (req, res) => {
     const parsed = paymentSchema.safeParse(req.body);
     if (!parsed.success) return res.status(400).json({ error: 'Invalid payment details.' });
-    const d = parsed.data;
-
-    if (d.idempotencyKey) {
-      if (processedPaymentKeys.has(d.idempotencyKey)) {
-        return res.status(200).json({ deduplicated: true, snapshot: getWorkspaceSnapshot() });
+    const payment = parsed.data;
+    const findReceipt = (field: 'id' | 'idempotency_key', value: string) =>
+      db.prepare(`SELECT ${paymentReceiptColumns} FROM fee_payments WHERE ${field} = ?`).get(value) as PaymentReceipt | undefined;
+    const state = getWorkspaceSnapshot();
+    for (let attempt = 0; attempt < 3; attempt++) {
+      const previous = payment.idempotencyKey ? findReceipt('idempotency_key', payment.idempotencyKey) : undefined;
+      if (previous) {
+        if (previous.student_id !== payment.studentId || previous.amount_paise !== payment.amountPaise) {
+          return res.status(409).json({ error: 'This payment request was already used. Reopen Record payment and try again.' });
+        }
+        return res.json({ paymentId: previous.id, receiptNumber: previous.receipt_number, snapshot: state });
       }
-      processedPaymentKeys.add(d.idempotencyKey);
+
+      const student = db.prepare('SELECT full_name, billing_revision FROM students WHERE id = ?').get(payment.studentId) as
+        { full_name: string; billing_revision: number } | undefined;
+      if (!student) return res.status(404).json({ error: 'Student not found.' });
+      const invoices = db.prepare('SELECT * FROM fee_invoices WHERE student_id = ?').all(payment.studentId)
+        .map((row) => mapBillingInvoice(row, state.todayIst));
+      if (payment.invoiceId) {
+        const target = invoices.find((invoice) => invoice.id === payment.invoiceId);
+        if (!target) return res.status(404).json({ error: 'Invoice not found for this student.' });
+        if (invoiceBalance(target) === 0) {
+          if (payment.idempotencyKey && findReceipt('idempotency_key', payment.idempotencyKey)) continue;
+          return res.status(409).json({ error: 'This bill no longer has a balance. Open Record payment to update the selection.' });
+        }
+      }
+
+      const id = generateId('pay');
+      const [inserted] = runLocalBillingBatch(paymentStatements(payment, invoices, student.billing_revision, id, state.todayIst, new Date().toISOString()));
+      if (!inserted) continue;
+      const receipt = findReceipt('id', id);
+      if (!receipt) throw new Error('Recorded payment has no receipt.');
+      logAudit('RECORD_PAYMENT', 'payment', id, `Recorded ${formatRupeesFromPaise(payment.amountPaise)} for ${student.full_name} (${receipt.receipt_number})`);
+      return res.status(201).json({ paymentId: id, receiptNumber: receipt.receipt_number, snapshot: getWorkspaceSnapshot() });
     }
-
-    const snap = getWorkspaceSnapshot();
-    const student = snap.students.find((s) => s.id === d.studentId);
-    if (!student) return res.status(404).json({ error: 'Student not found.' });
-
-    const studentInvoices = snap.invoices.filter((i) => i.studentId === d.studentId);
-    const alloc = allocatePaymentToInvoices({
-      invoices: studentInvoices,
-      paymentAmountPaise: d.amountPaise,
-      todayDate: snap.todayIst,
-      targetInvoiceId: d.invoiceId,
-    });
-
-    const now = new Date().toISOString();
-    const payDate = d.paymentDate || snap.todayIst;
-    const payCount = (db.prepare('SELECT COUNT(*) as c FROM fee_payments').get() as { c: number }).c;
-    const receiptNumber = `RCPT-${payDate.slice(0, 4)}-${String(payCount + 101).padStart(4, '0')}`;
-    const paymentId = generateId('pay');
-
-    for (const a of alloc.allocations) {
-      db.prepare('UPDATE fee_invoices SET paid_amount_paise = ?, status = ?, updated_at = ? WHERE id = ?').run(
-        a.newPaidPaise,
-        a.newStatus,
-        now,
-        a.invoiceId,
-      );
-    }
-
-    if (alloc.remainingAdvanceCreditPaise > 0) {
-      db.prepare('UPDATE students SET credit_balance_paise = credit_balance_paise + ?, updated_at = ? WHERE id = ?').run(
-        alloc.remainingAdvanceCreditPaise,
-        now,
-        d.studentId,
-      );
-    }
-
-    db.prepare(`
-      INSERT INTO fee_payments (
-        id, invoice_id, student_id, amount_paise, payment_date, method, transaction_ref,
-        receipt_number, notes, is_advance, is_demo, created_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-    `).run(
-      paymentId,
-      alloc.allocations[0]?.invoiceId ?? d.invoiceId ?? null,
-      d.studentId,
-      d.amountPaise,
-      payDate,
-      d.method,
-      d.transactionRef,
-      receiptNumber,
-      d.notes,
-      alloc.remainingAdvanceCreditPaise > 0 ? 1 : 0,
-      student.isDemo ? 1 : 0,
-      now,
-    );
-
-    logAudit(
-      'RECORD_PAYMENT',
-      'payment',
-      paymentId,
-      `Recorded ${formatRupeesFromPaise(d.amountPaise)} (${d.method.toUpperCase()}) for ${student.fullName} — Receipt ${receiptNumber}`,
-    );
-
-    res.status(201).json({ paymentId, receiptNumber, snapshot: getWorkspaceSnapshot() });
+    return res.status(409).json({ error: 'The fee balance changed while saving. Please try again.' });
   });
 
-  app.put('/api/fees/invoices/:id/waive', (req, res) => {
-    const inv = db.prepare('SELECT id, total_amount_paise, paid_amount_paise, due_date, status FROM fee_invoices WHERE id = ?').get(req.params.id) as
-      | { id: string; total_amount_paise: number; paid_amount_paise: number; due_date: string; status: string }
-      | undefined;
-    if (!inv) return res.status(404).json({ error: 'Invoice not found.' });
-    const waive = Boolean(req.body?.waived);
-    const nextStatus = computeInvoiceStatus(
-      inv.total_amount_paise,
-      inv.paid_amount_paise,
-      inv.due_date,
-      formatIstDate(new Date()),
-      waive,
-    );
-    db.prepare('UPDATE fee_invoices SET status = ?, updated_at = ? WHERE id = ?').run(
-      nextStatus,
-      new Date().toISOString(),
-      req.params.id,
-    );
-    logAudit('INVOICE_ADJUST', 'invoice', req.params.id, waive ? 'Waived monthly invoice' : 'Restored waived invoice');
+  app.put(['/api/fees/invoices/:id', '/api/fees/invoices/:id/waive'], (req, res) => {
+    const patch = invoicePatchSchema.safeParse(req.body);
+    if (!patch.success) return res.status(400).json({ error: 'Enter a valid due date or waiver status.' });
+    const { sql, values } = invoiceAdjustment(req.params.id, patch.data, formatIstDate(), new Date().toISOString());
+    if (!db.prepare(sql).run(...values).changes) return res.status(404).json({ error: 'Invoice not found.' });
+    logAudit('INVOICE_ADJUST', 'invoice', req.params.id, 'Updated invoice due date or waiver');
     res.json(getWorkspaceSnapshot());
   });
 

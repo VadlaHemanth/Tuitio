@@ -19,6 +19,7 @@ import type {
 } from '../src/types';
 import { formatIstDate, formatIstMonthKey } from '../src/engines/istDate';
 import { buildNextDayFeeReminders, evaluateFeeReminders } from '../src/engines/feeEngine';
+import { feeReminderStatements, mapBillingInvoice, monthlyBillStatements, type BillingStatement } from './billing';
 import { buildDemoDataset, createDefaultSettings, createDefaultTemplates } from './demoSeed';
 
 const DB_PATH = path.resolve(process.cwd(), process.env.DB_PATH || './data/tuitio.db');
@@ -37,6 +38,17 @@ if (!studentColumns.some((column) => column.name === 'nickname')) {
 }
 if (!studentColumns.some((column) => column.name === 'monthly_payment_day')) {
   db.exec(fs.readFileSync(path.resolve('cloudflare/migrations/0002_monthly_payment_reminders.sql'), 'utf8'));
+}
+
+if (!studentColumns.some((column) => column.name === 'billing_revision')) {
+  db.exec('BEGIN IMMEDIATE');
+  try {
+    db.exec(fs.readFileSync(path.resolve('cloudflare/migrations/0003_monthly_billing.sql'), 'utf8'));
+    db.exec('COMMIT');
+  } catch (error) {
+    db.exec('ROLLBACK');
+    throw error;
+  }
 }
 
 // Ensure default settings & templates exist
@@ -464,7 +476,6 @@ export function reconcileNotifications(
   students: Student[],
   invoices: FeeInvoice[],
   exams: ExamItem[],
-  discounts: DiscountRule[],
   todayIst: string,
 ): void {
   const insertNotif = db.prepare(`
@@ -490,13 +501,8 @@ export function reconcileNotifications(
   }
 
   // 2. Fee reminders. Recorded invoices and recurring fees both appear in Alerts.
-  const nextDay = buildNextDayFeeReminders({ students, invoices, discounts, feeConfig: settings.feeConfig, todayDate: todayIst });
-  for (const reminder of nextDay) {
-    insertNotif.run(
-      generateId('ntf'), 'fee_due', reminder.title, reminder.message, reminder.studentId ?? null,
-      'high', reminder.dedupKey, todayIst, nowIso,
-    );
-  }
+  const nextDay = buildNextDayFeeReminders({ students, invoices, todayDate: todayIst });
+  runLocalBillingBatch(feeReminderStatements(nextDay, todayIst, nowIso, () => generateId('ntf')));
   const feeReminders = evaluateFeeReminders({
     students, invoices, todayDate: todayIst, reminderSettings: settings.reminders, tuitionName: settings.tuitionName,
   });
@@ -537,13 +543,31 @@ export function reconcileNotifications(
   }
 }
 
+export function runLocalBillingBatch(statements: BillingStatement[]): number[] {
+  if (statements.length === 0) return [];
+  db.exec('BEGIN IMMEDIATE');
+  try {
+    const results = statements.map(({ sql, values }) => Number(db.prepare(sql).run(...values).changes));
+    db.exec('COMMIT');
+    return results;
+  } catch (error) {
+    db.exec('ROLLBACK');
+    throw error;
+  }
+}
+
+export function ensureLocalMonthlyBills(state: Pick<WorkspaceSnapshot, 'students' | 'discounts' | 'invoices' | 'settings' | 'todayIst'>, month: string) {
+  const pairs = monthlyBillStatements(state, month, () => generateId('inv'), new Date().toISOString());
+  return runLocalBillingBatch(pairs.flat()).reduce((total, changed, index) => total + (index % 2 === 0 ? changed : 0), 0);
+}
+
 export function getWorkspaceSnapshot(): WorkspaceSnapshot {
   const settings = getSettings();
   const todayIst = formatIstDate(new Date());
   const currentMonthIst = formatIstMonthKey(new Date());
 
-  const studentRows = db.prepare('SELECT * FROM students ORDER BY full_name ASC').all() as Record<string, unknown>[];
-  const students = studentRows.map(mapStudent);
+  const readStudents = db.prepare('SELECT * FROM students ORDER BY full_name ASC');
+  let students = readStudents.all().map(mapStudent);
 
   const discountRows = db.prepare('SELECT * FROM discounts ORDER BY created_at DESC').all() as Record<string, unknown>[];
   const discounts: DiscountRule[] = discountRows.map((r) => ({
@@ -631,27 +655,13 @@ export function getWorkspaceSnapshot(): WorkspaceSnapshot {
     updatedAt: String(r.updated_at),
   }));
 
-  const invRows = db.prepare('SELECT * FROM fee_invoices ORDER BY month_key DESC, due_date ASC').all() as Record<string, unknown>[];
-  const invoices: FeeInvoice[] = invRows.map((r) => ({
-    id: String(r.id),
-    studentId: String(r.student_id),
-    monthKey: String(r.month_key),
-    classLevelSnapshot: Number(r.class_level_snapshot) as FeeInvoice['classLevelSnapshot'],
-    boardSnapshot: String(r.board_snapshot) as FeeInvoice['boardSnapshot'],
-    baseAmountPaise: Number(r.base_amount_paise),
-    boardSurchargePaise: Number(r.board_surcharge_paise),
-    overrideApplied: Number(r.override_applied) === 1,
-    discountPaise: Number(r.discount_paise),
-    discountSummary: String(r.discount_summary ?? ''),
-    totalAmountPaise: Number(r.total_amount_paise),
-    paidAmountPaise: Number(r.paid_amount_paise),
-    dueDate: String(r.due_date),
-    status: String(r.status) as FeeInvoice['status'],
-    notes: String(r.notes ?? ''),
-    isDemo: Number(r.is_demo) === 1,
-    createdAt: String(r.created_at),
-    updatedAt: String(r.updated_at),
-  }));
+  const readInvoices = db.prepare('SELECT * FROM fee_invoices ORDER BY month_key DESC, due_date ASC');
+  let invoices = readInvoices.all().map((row) => mapBillingInvoice(row, todayIst));
+  const created = ensureLocalMonthlyBills({ students, discounts, invoices, settings, todayIst }, currentMonthIst);
+  if (created > 0) {
+    students = readStudents.all().map(mapStudent);
+    invoices = readInvoices.all().map((row) => mapBillingInvoice(row, todayIst));
+  }
 
   const payRows = db.prepare('SELECT * FROM fee_payments ORDER BY payment_date DESC, created_at DESC').all() as Record<string, unknown>[];
   const payments: FeePayment[] = payRows.map((r) => ({
@@ -665,6 +675,7 @@ export function getWorkspaceSnapshot(): WorkspaceSnapshot {
     receiptNumber: String(r.receipt_number),
     notes: String(r.notes ?? ''),
     isAdvance: Number(r.is_advance) === 1,
+    allocations: r.allocations_json ? JSON.parse(String(r.allocations_json)) : undefined,
     isDemo: Number(r.is_demo) === 1,
     createdAt: String(r.created_at),
   }));
@@ -687,7 +698,7 @@ export function getWorkspaceSnapshot(): WorkspaceSnapshot {
     updatedAt: String(r.updated_at),
   }));
 
-  reconcileNotifications(settings, students, invoices, exams, discounts, todayIst);
+  reconcileNotifications(settings, students, invoices, exams, todayIst);
 
   const notifRows = db.prepare('SELECT * FROM notifications ORDER BY created_at DESC LIMIT 80').all() as Record<string, unknown>[];
   const notifications: NotificationItem[] = notifRows.map((r) => ({

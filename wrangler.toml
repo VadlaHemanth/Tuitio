@@ -2,6 +2,11 @@ name = "tuitio-smart-tuition"
 main = "cloudflare/worker.ts"
 compatibility_date = "2025-10-01"
 compatibility_flags = ["nodejs_compat"]
+workers_dev = true
+
+[[routes]]
+pattern = "tutio.hemanthvadla.tech"
+custom_domain = true
 
 [assets]
 directory = "./dist"

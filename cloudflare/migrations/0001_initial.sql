@@ -50,7 +50,7 @@ CREATE TABLE IF NOT EXISTS students (
   academic_performance INTEGER NOT NULL DEFAULT 75,
   preferred_arrival_time TEXT NOT NULL DEFAULT '18:00',
   allocated_slot TEXT NOT NULL DEFAULT '18:00–20:00',
-  expected_duration_minutes INTEGER NOT NULL DEFAULT 90,
+  expected_duration_minutes INTEGER NOT NULL DEFAULT 120,
   regular_days_json TEXT NOT NULL DEFAULT '[1,2,3,4,5,6]',
   fee_due_day INTEGER NOT NULL DEFAULT 5 CHECK (fee_due_day BETWEEN 1 AND 28),
   fee_override_json TEXT,

@@ -4,10 +4,13 @@ import type {
   DiscountRule,
   FeeInvoice,
   FeeRateConfig,
+  NotificationItem,
   ReminderSettings,
   Student,
+  TuitionSettings,
 } from '../types';
 import {
+  addDaysToDateStr,
   buildDueDateForMonth,
   daysInMonth,
   diffDaysBetweenDateStrs,
@@ -427,7 +430,7 @@ export function evaluateFeeReminders(params: {
       urgency = 'normal';
       triggerTag = `before-${reminderSettings.feeDaysBefore}`;
     } else if (daysFromDue < 0 && daysFromDue > -reminderSettings.feeDaysBefore) {
-      reason = `Fee due in ${Math.abs(daysFromDue)} day${Math.abs(daysFromDue) === 1 ? '' : 's'}`;
+      reason = `Fee due in ${Math.abs(daysFromDue)} days`;
       urgency = 'normal';
       triggerTag = `approaching-${Math.abs(daysFromDue)}`;
     } else if (daysFromDue === 0 && reminderSettings.feeOnDueDate) {
@@ -483,6 +486,41 @@ export function evaluateFeeReminders(params: {
   }
 
   return results.sort((a, b) => b.daysFromDue - a.daysFromDue);
+}
+
+export function buildNextDayFeeReminders({ students, invoices, discounts, feeConfig, todayDate }: {
+  students: Student[];
+  invoices: FeeInvoice[];
+  discounts: DiscountRule[];
+  feeConfig: TuitionSettings['feeConfig'];
+  todayDate: string;
+}): Pick<NotificationItem, 'studentId' | 'title' | 'message' | 'dedupKey' | 'scheduledFor'>[] {
+  const tomorrow = addDaysToDateStr(todayDate, 1);
+  const monthKey = tomorrow.slice(0, 7);
+  const invoiceByStudent = new Map(invoices.filter((invoice) => invoice.monthKey === monthKey)
+    .map((invoice) => [invoice.studentId, invoice]));
+
+  return students.flatMap((student) => {
+    if (student.status !== 'active' || student.isDemo || student.admissionDate > tomorrow) return [];
+    const invoice = invoiceByStudent.get(student.id);
+    const due = invoice?.dueDate ?? buildDueDateForMonth(monthKey, student.feeDueDay || feeConfig.defaultDueDay);
+    if (due !== tomorrow) return [];
+    const bill = invoice ?? buildMonthlyInvoiceDraft({
+      student, monthKey, feeConfig, discounts, existingInvoices: [], todayDate,
+    });
+    if (!bill || bill.status === 'waived' || bill.status === 'paid') return [];
+    const balance = bill.totalAmountPaise - bill.paidAmountPaise;
+    if (balance <= 0) return [];
+
+    const name = student.nickname ? `${student.nickname} (${student.fullName})` : student.fullName;
+    return [{
+      studentId: student.id,
+      title: `${name} · Fee due tomorrow`,
+      message: `${formatRupeesFromPaise(balance)} due on ${due} · Class ${student.classLevel} ${student.board}`,
+      dedupKey: `fee:${student.id}:${monthKey}:before-1-day:${due}`,
+      scheduledFor: todayDate,
+    }];
+  });
 }
 
 export function buildMonthlyInvoiceDraft(params: {

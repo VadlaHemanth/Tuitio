@@ -18,7 +18,7 @@ import type {
   WorkspaceSnapshot,
 } from '../src/types';
 import { formatIstDate, formatIstMonthKey } from '../src/engines/istDate';
-import { evaluateFeeReminders } from '../src/engines/feeEngine';
+import { buildNextDayFeeReminders, evaluateFeeReminders } from '../src/engines/feeEngine';
 import { buildDemoDataset, createDefaultSettings, createDefaultTemplates } from './demoSeed';
 
 const DB_PATH = path.resolve(process.cwd(), process.env.DB_PATH || './data/tuitio.db');
@@ -31,6 +31,13 @@ db.exec('PRAGMA journal_mode = WAL;');
 const MIGRATION_PATH = path.resolve(process.cwd(), 'cloudflare/migrations/0001_initial.sql');
 const schemaSql = fs.readFileSync(MIGRATION_PATH, 'utf8');
 db.exec(schemaSql);
+const studentColumns = db.prepare('PRAGMA table_info(students)').all();
+if (!studentColumns.some((column) => column.name === 'nickname')) {
+  db.exec('ALTER TABLE students ADD COLUMN nickname TEXT');
+}
+if (!studentColumns.some((column) => column.name === 'monthly_payment_day')) {
+  db.exec(fs.readFileSync(path.resolve('cloudflare/migrations/0002_monthly_payment_reminders.sql'), 'utf8'));
+}
 
 // Ensure default settings & templates exist
 function ensureBootstrapDefaults() {
@@ -112,7 +119,7 @@ export function getSettings(): TuitionSettings {
     ...defaults,
     ...parsed,
     feeConfig: { ...defaults.feeConfig, ...(parsed.feeConfig || {}) },
-    reminders: { ...defaults.reminders, ...(parsed.reminders || {}) },
+    reminders: { ...defaults.reminders, ...parsed.reminders, feeDaysBefore: 1 },
   };
 }
 
@@ -435,9 +442,9 @@ function mapStudent(r: Record<string, unknown>): Student {
     academicPerformance: Number(r.academic_performance ?? 75),
     preferredArrivalTime: String(r.preferred_arrival_time || '18:00'),
     allocatedSlot: String(r.allocated_slot || '18:00–20:00'),
-    expectedDurationMinutes: Number(r.expected_duration_minutes ?? 90),
+    expectedDurationMinutes: Number(r.expected_duration_minutes ?? 120),
     regularDays: JSON.parse(String(r.regular_days_json || '[1,2,3,4,5,6]')),
-    feeDueDay: Number(r.fee_due_day ?? 5),
+    feeDueDay: Number(r.monthly_payment_day ?? r.fee_due_day ?? 5),
     feeOverride: r.fee_override_json ? JSON.parse(String(r.fee_override_json)) : null,
     creditBalancePaise: Number(r.credit_balance_paise ?? 0),
     notes: String(r.notes ?? ''),
@@ -457,6 +464,7 @@ export function reconcileNotifications(
   students: Student[],
   invoices: FeeInvoice[],
   exams: ExamItem[],
+  discounts: DiscountRule[],
   todayIst: string,
 ): void {
   const insertNotif = db.prepare(`
@@ -481,25 +489,24 @@ export function reconcileNotifications(
     );
   }
 
-  // 2. Fee reminders (deduped via dedup_key)
-  const feeRems = evaluateFeeReminders({
-    students,
-    invoices,
-    todayDate: todayIst,
-    reminderSettings: settings.reminders,
-    tuitionName: settings.tuitionName,
-  });
-  for (const r of feeRems) {
+  // 2. Fee reminders. Recorded invoices and recurring fees both appear in Alerts.
+  const nextDay = buildNextDayFeeReminders({ students, invoices, discounts, feeConfig: settings.feeConfig, todayDate: todayIst });
+  for (const reminder of nextDay) {
     insertNotif.run(
-      generateId('ntf'),
-      r.daysFromDue > 0 ? 'fee_overdue' : 'fee_due',
-      `${r.studentName} — ${r.reason}`,
-      `Parent: ${r.parentName} (${r.parentPhone}). Ready to copy or share polite reminder.`,
-      r.studentId,
-      r.urgency,
-      r.dedupKey,
-      todayIst,
-      nowIso,
+      generateId('ntf'), 'fee_due', reminder.title, reminder.message, reminder.studentId ?? null,
+      'high', reminder.dedupKey, todayIst, nowIso,
+    );
+  }
+  const feeReminders = evaluateFeeReminders({
+    students, invoices, todayDate: todayIst, reminderSettings: settings.reminders, tuitionName: settings.tuitionName,
+  });
+  for (const reminder of feeReminders) {
+    if (reminder.daysFromDue < 0) continue;
+    insertNotif.run(
+      generateId('ntf'), reminder.daysFromDue > 0 ? 'fee_overdue' : 'fee_due',
+      `${reminder.studentName} · ${reminder.reason}`,
+      `${reminder.unpaidMonthCount} unpaid month(s) · Due ${reminder.dueDate}`,
+      reminder.studentId, reminder.urgency, reminder.dedupKey, todayIst, nowIso,
     );
   }
 
@@ -680,7 +687,7 @@ export function getWorkspaceSnapshot(): WorkspaceSnapshot {
     updatedAt: String(r.updated_at),
   }));
 
-  reconcileNotifications(settings, students, invoices, exams, todayIst);
+  reconcileNotifications(settings, students, invoices, exams, discounts, todayIst);
 
   const notifRows = db.prepare('SELECT * FROM notifications ORDER BY created_at DESC LIMIT 80').all() as Record<string, unknown>[];
   const notifications: NotificationItem[] = notifRows.map((r) => ({

@@ -1,9 +1,9 @@
+import { StudentName } from './StudentName';
 import React, { useMemo, useState } from 'react';
 import {
   Check,
   Copy,
   Download,
-  ExternalLink,
   IndianRupee,
   Percent,
   Plus,
@@ -24,8 +24,8 @@ import type {
   WorkspaceSnapshot,
 } from '../types';
 import { evaluateFeeReminders } from '../engines/feeEngine';
-import { formatRupeesFromPaise, getMonthLabel } from '../engines/istDate';
-import { buildWhatsAppShareUrl, downloadCsv } from '../lib/api';
+import { formatOrdinal, formatRupeesFromPaise, getMonthLabel } from '../engines/istDate';
+import { downloadCsv } from '../lib/api';
 
 interface FeesViewProps {
   workspace: WorkspaceSnapshot;
@@ -322,14 +322,7 @@ export const FeesView: React.FC<FeesViewProps> = ({
                     <tr key={inv.id} className="hover:bg-sky-50/50 dark:hover:bg-white/5">
                       <td className="py-3 pr-4">
                         <p className="font-semibold text-slate-900 dark:text-white">
-                          {stu?.nickname ? (
-                            <span>
-                              <span className="font-bold text-sky-700 dark:text-sky-300">{stu.nickname}</span>
-                              <span className="text-xs font-normal text-slate-500 dark:text-neutral-400 ml-1.5">({stu.fullName})</span>
-                            </span>
-                          ) : (
-                            stu?.fullName ?? 'Student'
-                          )}
+                          <StudentName student={stu} />
                         </p>
                         <p className="text-xs text-slate-500 dark:text-neutral-400">
                           Class {inv.classLevelSnapshot} · {inv.boardSnapshot}
@@ -338,7 +331,7 @@ export const FeesView: React.FC<FeesViewProps> = ({
                       </td>
                       <td className="py-3 px-3 font-mono tabular-nums text-xs text-slate-600 dark:text-neutral-400 whitespace-nowrap">
                         <div>{inv.dueDate}</div>
-                        <div className="text-[10px] text-sky-700 dark:text-sky-400 font-sans">Monthly payment date: {stu?.feeDueDay ?? 5}th</div>
+                        <div className="text-[10px] text-sky-700 dark:text-sky-400 font-sans">Monthly payment date · {formatOrdinal(stu?.feeDueDay ?? workspace.settings.feeConfig.defaultDueDay)}</div>
                       </td>
                       <td className="py-3 px-3 text-right font-mono tabular-nums text-xs font-medium text-slate-900 dark:text-white">
                         {formatRupeesFromPaise(inv.totalAmountPaise)}
@@ -399,7 +392,7 @@ export const FeesView: React.FC<FeesViewProps> = ({
         <div className="space-y-3">
           {feeReminders.length === 0 ? (
             <div className="liquid-glass rounded-3xl p-8 text-center text-sm text-slate-600 dark:text-neutral-400">
-              No overdue or upcoming fee reminders today. All parents are up to date.
+              No due or overdue invoices to follow up today.
             </div>
           ) : (
             feeReminders.map((rem) => (
@@ -407,10 +400,10 @@ export const FeesView: React.FC<FeesViewProps> = ({
                 <div className="flex flex-wrap items-start justify-between gap-3">
                   <div>
                     <h3 className="text-base font-bold text-slate-950 dark:text-white">
-                      {rem.studentName} · <span className="font-mono">{formatRupeesFromPaise(rem.balancePaise)}</span>
+                      <StudentName student={studentMap.get(rem.studentId)} /> <span className="font-mono">{formatRupeesFromPaise(rem.balancePaise)}</span>
                     </h3>
                     <p className="text-xs text-slate-600 dark:text-neutral-400">
-                      {rem.reason} · Guardian: {rem.parentName} ({rem.parentPhone}) · Due {rem.dueDate}
+                      {rem.reason} · Due {rem.dueDate}
                     </p>
                   </div>
                   <div className="flex flex-wrap items-center gap-2">
@@ -422,15 +415,7 @@ export const FeesView: React.FC<FeesViewProps> = ({
                       {copiedId === rem.dedupKey ? <Check className="w-3.5 h-3.5" /> : <Copy className="w-3.5 h-3.5" />}
                       <span>{copiedId === rem.dedupKey ? 'Copied' : 'Copy Message'}</span>
                     </button>
-                    <a
-                      href={buildWhatsAppShareUrl(rem.parentPhone, rem.suggestedMessage)}
-                      target="_blank"
-                      rel="noopener noreferrer"
-                      className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-xs font-semibold border border-sky-200 dark:border-white/20 text-slate-800 dark:text-white hover:bg-sky-50 dark:hover:bg-white/10"
-                    >
-                      <ExternalLink className="w-3.5 h-3.5" />
-                      <span>Open in WhatsApp</span>
-                    </a>
+
                     <button
                       type="button"
                       onClick={() => {
@@ -528,7 +513,7 @@ export const FeesView: React.FC<FeesViewProps> = ({
                 return (
                   <tr key={p.id}>
                     <td className="py-3 pr-4 font-mono text-xs font-semibold text-slate-900 dark:text-white">{p.receiptNumber}</td>
-                    <td className="py-3 px-3 text-xs font-medium text-slate-800 dark:text-neutral-200">{stu?.fullName ?? 'Student'}</td>
+                    <td className="py-3 px-3 text-xs font-medium text-slate-800 dark:text-neutral-200"><StudentName student={stu} /></td>
                     <td className="py-3 px-3 text-xs text-slate-500 dark:text-neutral-400 font-mono">
                       {p.paymentDate} · {p.method.toUpperCase()} {p.transactionRef ? `· ${p.transactionRef}` : ''}
                     </td>
@@ -615,7 +600,7 @@ export const FeesView: React.FC<FeesViewProps> = ({
               <div className="flex justify-between">
                 <span className="text-slate-500 dark:text-neutral-400">Student</span>
                 <span className="font-semibold text-slate-950 dark:text-white">
-                  {studentMap.get(receiptPayment.studentId)?.fullName ?? 'Student'}
+                  <StudentName student={studentMap.get(receiptPayment.studentId)} />
                 </span>
               </div>
               <div className="flex justify-between">

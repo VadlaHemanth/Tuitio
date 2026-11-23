@@ -1,3 +1,4 @@
+import { StudentName } from './StudentName';
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import {
   BookOpen,
@@ -187,10 +188,10 @@ export const CommandPalette: React.FC<CommandPaletteProps> = ({
                       <Users className="w-4 h-4 text-sky-600 dark:text-neutral-400 shrink-0" />
                       <div className="min-w-0">
                         <p className="text-sm font-semibold text-slate-900 dark:text-white truncate">
-                          {s.nickname ? `${s.nickname} (${s.fullName})` : s.fullName}
+                          <StudentName student={s} />
                         </p>
                         <p className="text-xs text-slate-500 dark:text-neutral-400 truncate">
-                          Class {s.classLevel} · {s.board} · {s.parentName}
+                          Class {s.classLevel} · {s.board}
                         </p>
                       </div>
                     </div>

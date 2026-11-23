@@ -22,11 +22,18 @@ jobs:
       - name: Install Dependencies
         run: npm install
 
-      - name: Run Engine Tests
-        run: npm run test
+      - name: Check Types and Run Tests
+        run: npm run lint && npm run test
 
       - name: Build Frontend & PWA Assets
         run: npm run build
+
+      - name: Apply Database Migrations
+        uses: cloudflare/wrangler-action@v3
+        with:
+          apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          command: d1 migrations apply tuitio-db1 --remote --config wrangler.toml
 
       - name: Deploy to Cloudflare Workers
         uses: cloudflare/wrangler-action@v3

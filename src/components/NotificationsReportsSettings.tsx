@@ -1,4 +1,4 @@
-import React, { useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useState } from 'react';
 import {
   Bell,
   Check,
@@ -18,7 +18,7 @@ import type { ThemePreference } from '../hooks/useTheme';
 import { usePWAInstall } from '../hooks/usePWAInstall';
 import { DEFAULT_FEE_CONFIG } from '../engines/feeEngine';
 import { formatRupeesFromPaise } from '../engines/istDate';
-import { downloadCsv } from '../lib/api';
+import { apiRequest, downloadCsv } from '../lib/api';
 
 // --- NOTIFICATIONS VIEW ---
 
@@ -28,23 +28,63 @@ export const NotificationsView: React.FC<{
   onMarkAllRead: () => Promise<void>;
 }> = ({ workspace, onMarkRead, onMarkAllRead }) => {
   const [filter, setFilter] = useState<'all' | 'unread'>('all');
-  const [permState, setPermState] = useState<string>(() =>
-    typeof Notification !== 'undefined' ? Notification.permission : 'unsupported',
-  );
+  const pushSupported = 'Notification' in window && 'serviceWorker' in navigator && 'PushManager' in window;
+  const [permission, setPermission] = useState<NotificationPermission>(() => pushSupported ? Notification.permission : 'default');
+  const [device, setDevice] = useState<{ registration: ServiceWorkerRegistration; publicKey: string } | null>(null);
+  const [subscribed, setSubscribed] = useState(false);
+  const [changingSubscription, setChangingSubscription] = useState(false);
+  const [pushError, setPushError] = useState('');
 
   const items = useMemo(
     () => workspace.notifications.filter((n) => (filter === 'unread' ? !n.read : true)),
     [workspace.notifications, filter],
   );
 
-  const requestBrowserNotifications = async () => {
-    if (typeof Notification === 'undefined') return;
-    const res = await Notification.requestPermission();
-    setPermState(res);
-    if (res === 'granted') {
-      new Notification('Tuitio Notifications Enabled', {
-        body: 'You will receive browser reminders for 5:30 PM prep, upcoming exams, and due fees while active.',
-      });
+  useEffect(() => {
+    if (!pushSupported || permission === 'denied') return;
+    let active = true;
+    void Promise.all([
+      navigator.serviceWorker.ready,
+      apiRequest<{ publicKey: string }>('/api/notifications/push'),
+    ]).then(async ([registration, { publicKey }]) => {
+      const subscription = await registration.pushManager.getSubscription();
+      if (active) {
+        setDevice({ registration, publicKey });
+        setSubscribed(permission === 'granted' && subscription !== null);
+      }
+    }).catch(() => {
+      if (active) setPushError('Device notifications could not load. Reopen Alerts to retry.');
+    });
+    return () => { active = false; };
+  }, [pushSupported, permission]);
+
+  const toggleDeviceNotifications = async () => {
+    if (!device || changingSubscription) return;
+    setChangingSubscription(true);
+    setPushError('');
+    let pendingSubscription: PushSubscription | undefined;
+    try {
+      const manager = device.registration.pushManager;
+      if (subscribed) {
+        const subscription = await manager.getSubscription();
+        if (subscription) {
+          await apiRequest('/api/notifications/push', { method: 'DELETE', body: { endpoint: subscription.endpoint } });
+          await subscription.unsubscribe();
+        }
+        setSubscribed(false);
+      } else {
+        pendingSubscription = await manager.subscribe({ userVisibleOnly: true, applicationServerKey: device.publicKey });
+        await apiRequest('/api/notifications/push', { method: 'POST', body: pendingSubscription.toJSON() });
+        setSubscribed(true);
+      }
+    } catch (error) {
+      if (pendingSubscription) await pendingSubscription.unsubscribe().catch(() => {});
+      setPushError(Notification.permission === 'denied'
+        ? 'Allow notifications in your browser settings to enable fee reminders.'
+        : error instanceof Error ? error.message : 'Device notifications could not be updated.');
+    } finally {
+      setPermission(Notification.permission);
+      setChangingSubscription(false);
     }
   };
 
@@ -54,22 +94,19 @@ export const NotificationsView: React.FC<{
         <div>
           <h1 className="text-2xl font-bold text-slate-950 dark:text-white">Notifications & Reminders</h1>
           <p className="text-xs text-slate-500 dark:text-neutral-400 mt-0.5">
-            Deduplicated alerts for 5:30 PM prep, exams, homework deadlines, and fee due dates
+            Fee reminders arrive here one day before payment is due.
           </p>
         </div>
         <div className="flex flex-wrap items-center gap-2">
           <button
             type="button"
-            onClick={requestBrowserNotifications}
-            className="inline-flex items-center gap-1.5 px-3.5 py-2 rounded-xl text-xs font-semibold border border-sky-200 dark:border-white/20 bg-white/80 dark:bg-neutral-950 text-slate-800 dark:text-white"
+            onClick={toggleDeviceNotifications}
+            disabled={!device || changingSubscription || permission === 'denied'}
+            className="inline-flex items-center gap-1.5 px-3.5 py-2 rounded-xl text-xs font-semibold border border-sky-200 dark:border-white/20 bg-white/80 dark:bg-neutral-950 text-slate-800 dark:text-white disabled:opacity-60"
           >
             <Bell className="w-3.5 h-3.5" />
             <span>
-              {permState === 'granted'
-                ? 'Browser Alerts Active'
-                : permState === 'denied'
-                  ? 'Alerts Blocked in Browser'
-                  : 'Enable Browser Alerts'}
+              {changingSubscription ? 'Saving…' : subscribed ? 'Turn off device alerts' : 'Enable device alerts'}
             </span>
           </button>
           <button
@@ -82,6 +119,11 @@ export const NotificationsView: React.FC<{
           </button>
         </div>
       </div>
+
+      {pushError && <p role="alert" className="text-sm text-rose-700 dark:text-rose-300">{pushError}</p>}
+      {permission === 'denied' && !pushError && (
+        <p className="text-sm text-slate-600 dark:text-neutral-300">Notifications are blocked in this browser’s settings.</p>
+      )}
 
       <div className="flex items-center p-1 rounded-xl liquid-glass gap-1 w-fit">
         <button
@@ -133,15 +175,14 @@ export const NotificationsView: React.FC<{
         )}
       </div>
 
-      {/* Honest Free-Tier Technical Transparency */}
       <div className="liquid-glass rounded-2xl p-4 flex items-start gap-3 text-xs text-slate-600 dark:text-neutral-400">
         <Info className="w-4 h-4 shrink-0 mt-0.5 text-sky-600 dark:text-white" />
         <div className="space-y-1">
           <p className="font-semibold text-slate-800 dark:text-neutral-200">
-            Free Notification Delivery Notes (Zero Paid Push Platforms)
+            Fee alerts on this device
           </p>
           <p>
-            In-app reminders always reconcile reliably whenever you open Tuitio. Browser notifications work free when permission is granted. On iOS Safari, Web Push requires installing Tuitio to the Home Screen (iOS 16.4+), and aggressive Android battery savers may delay background pushes — therefore Tuitio never relies solely on push delivery.
+            Enable alerts on each device you use. On iPhone or iPad, add Tuitio to your Home Screen and open it from there to enable alerts.
           </p>
         </div>
       </div>
@@ -647,17 +688,8 @@ export const SettingsView: React.FC<{
               />
             </div>
             <div>
-              <label className="block text-slate-600 dark:text-neutral-400 mb-1">Fee Remind Days Before</label>
-              <input
-                type="number"
-                min={1}
-                max={14}
-                value={draft.reminders.feeDaysBefore}
-                onChange={(e) =>
-                  setDraft({ ...draft, reminders: { ...draft.reminders, feeDaysBefore: Number(e.target.value) } })
-                }
-                className="w-full px-3 py-2 rounded-xl bg-white/80 dark:bg-black border border-sky-200 dark:border-white/20 font-mono"
-              />
+              <p className="text-slate-600 dark:text-neutral-400 mb-1">Payment reminder</p>
+              <p className="text-sm text-slate-900 dark:text-white">One day before the monthly payment date</p>
             </div>
           </div>
           <div>

@@ -1,3 +1,4 @@
+import { StudentName } from './StudentName';
 import React, { useMemo, useState } from 'react';
 import {
   ArrowLeft,
@@ -23,7 +24,7 @@ import type {
   WorkspaceSnapshot,
 } from '../types';
 import { calculateStudentMonthlyFee, previewStudentPromotion } from '../engines/feeEngine';
-import { formatHHMMTo12Hour, formatRupeesFromPaise } from '../engines/istDate';
+import { formatHHMMTo12Hour, formatRupeesFromPaise, formatOrdinal, formatSessionSlot } from '../engines/istDate';
 
 interface StudentsViewProps {
   workspace: WorkspaceSnapshot;
@@ -91,7 +92,7 @@ export const StudentsView: React.FC<StudentsViewProps> = ({
         if (boardFilter !== 'all' && s.board !== boardFilter) return false;
         if (dueOnly && (balanceByStudent.get(s.id) ?? 0) <= 0) return false;
         if (q) {
-          const hay = `${s.nickname || ''} ${s.fullName} ${s.studentCode} ${s.schoolName} ${s.parentName} ${s.parentPhone} class ${s.classLevel} ${s.board}`.toLowerCase();
+          const hay = `${s.nickname || ''} ${s.fullName} ${s.studentCode} ${s.schoolName} class ${s.classLevel} ${s.board}`.toLowerCase();
           if (!hay.includes(q)) return false;
         }
         return true;
@@ -184,28 +185,14 @@ export const StudentsView: React.FC<StudentsViewProps> = ({
               {(selectedStudent.nickname || selectedStudent.fullName).split(' ').map((w) => w[0]).join('').slice(0, 2).toUpperCase()}
             </div>
             <div>
-              {selectedStudent.nickname ? (
-                <div>
-                  <div className="flex items-baseline gap-2">
-                    <h1 className="text-2xl font-black tracking-tight text-slate-950 dark:text-white">
-                      {selectedStudent.nickname}
-                    </h1>
-                    <span className="text-[11px] font-semibold text-sky-700 dark:text-sky-300 bg-sky-100/80 dark:bg-sky-950 px-2 py-0.5 rounded-full border border-sky-300/60 dark:border-sky-800">
-                      Nickname
-                    </span>
-                  </div>
-                  <p className="text-sm font-medium text-slate-500 dark:text-neutral-400">
-                    Full Name: <span className="font-semibold text-slate-800 dark:text-neutral-200">{selectedStudent.fullName}</span>
-                  </p>
-                </div>
-              ) : (
-                <h1 className="text-2xl font-bold text-slate-950 dark:text-white">{selectedStudent.fullName}</h1>
-              )}
+              <h1 className="text-2xl font-bold text-slate-950 dark:text-white">
+                <StudentName student={selectedStudent} />
+              </h1>
               <p className="text-sm text-slate-600 dark:text-neutral-400">
                 Class {selectedStudent.classLevel} · {selectedStudent.board} · {selectedStudent.schoolName || 'School not set'} · <span className="capitalize">{selectedStudent.status}</span>
               </p>
               <p className="text-xs text-slate-500 dark:text-neutral-400 mt-1 font-mono tabular-nums">
-                {selectedStudent.studentCode} · Arrives {formatHHMMTo12Hour(selectedStudent.preferredArrivalTime)} ({selectedStudent.expectedDurationMinutes} min) {selectedStudent.parentName ? `· Guardian: ${selectedStudent.parentName} ${selectedStudent.parentPhone ? `(${selectedStudent.parentPhone})` : ''}` : ''}
+                {selectedStudent.studentCode} · Arrives {formatHHMMTo12Hour(selectedStudent.preferredArrivalTime)} ({selectedStudent.expectedDurationMinutes === 120 ? '2 hours' : `${selectedStudent.expectedDurationMinutes} min`})
               </p>
             </div>
           </div>
@@ -273,7 +260,7 @@ export const StudentsView: React.FC<StudentsViewProps> = ({
                     <div>
                       <span className="text-[10px] font-bold uppercase tracking-wider text-sky-700 dark:text-sky-300 block">Monthly Fee Payment Date</span>
                       <p className="text-sm font-bold text-slate-900 dark:text-white mt-0.5">
-                        Payment on {selectedStudent.feeDueDay}{selectedStudent.feeDueDay === 1 || selectedStudent.feeDueDay === 21 ? 'st' : selectedStudent.feeDueDay === 2 || selectedStudent.feeDueDay === 22 ? 'nd' : selectedStudent.feeDueDay === 3 || selectedStudent.feeDueDay === 23 ? 'rd' : 'th'} of every month
+                        Payment on {formatOrdinal(selectedStudent.feeDueDay)} of every month
                       </p>
                       <p className="text-[11px] text-sky-700 dark:text-sky-400 mt-0.5">
                         🔔 Notification sent 1 day before (on day {selectedStudent.feeDueDay > 1 ? selectedStudent.feeDueDay - 1 : 28})
@@ -326,15 +313,9 @@ export const StudentsView: React.FC<StudentsViewProps> = ({
                   </p>
                 </div>
                 <div>
-                  <p className="text-xs text-slate-500 dark:text-neutral-400">Subjects Studied</p>
-                  <p className="text-sm font-medium text-slate-900 dark:text-white mt-1">
-                    {selectedStudent.subjects.join(' · ') || 'None specified'}
-                  </p>
-                </div>
-                <div>
                   <p className="text-xs text-slate-500 dark:text-neutral-400">Academic Goal</p>
                   <p className="text-sm font-medium text-slate-900 dark:text-white mt-1">
-                    {selectedStudent.academicGoals || 'Steady syllabus mastery'}
+                    {selectedStudent.academicGoals || 'No goal set'}
                   </p>
                 </div>
               </div>
@@ -345,12 +326,7 @@ export const StudentsView: React.FC<StudentsViewProps> = ({
                     {selectedStudent.strengths.join(', ') || 'Not recorded yet'}
                   </p>
                 </div>
-                <div>
-                  <p className="text-xs font-semibold text-slate-700 dark:text-neutral-300">Weak Areas / Focus Topics</p>
-                  <p className="text-sm text-slate-700 dark:text-neutral-300 mt-1">
-                    {selectedStudent.weaknesses.join(', ') || 'Not recorded yet'}
-                  </p>
-                </div>
+
               </div>
             </div>
           )}
@@ -619,7 +595,7 @@ export const StudentsView: React.FC<StudentsViewProps> = ({
             aria-label="Search students"
             value={search}
             onChange={(e) => setSearch(e.target.value)}
-            placeholder="Search name, parent, school, ID..."
+            placeholder="Search name, school, class or ID"
             className="w-full pl-9 pr-3 py-2 rounded-xl bg-white/80 dark:bg-black border border-sky-200/70 dark:border-white/15 text-xs text-slate-900 dark:text-white focus:outline-none"
           />
         </div>
@@ -738,33 +714,16 @@ export const StudentsView: React.FC<StudentsViewProps> = ({
                         }}
                         className="text-left group"
                       >
-                        {s.nickname ? (
-                          <div>
-                            <p className="font-bold text-base text-slate-950 dark:text-white group-hover:text-sky-700 dark:group-hover:text-sky-400 transition-colors">
-                              {s.nickname}
-                              {s.isDemo ? <span className="ml-1.5 text-[11px] font-normal text-slate-400">(Sample)</span> : null}
-                            </p>
-                            <p className="text-xs font-medium text-slate-500 dark:text-neutral-400">
-                              {s.fullName} {s.parentPhone ? `· ${s.parentPhone}` : ''}
-                            </p>
-                          </div>
-                        ) : (
-                          <div>
-                            <p className="font-semibold text-slate-900 dark:text-white group-hover:text-sky-700 dark:group-hover:underline">
-                              {s.fullName}
-                              {s.isDemo ? <span className="ml-1.5 text-[11px] font-normal text-slate-400">(Sample)</span> : null}
-                            </p>
-                            <p className="text-xs text-slate-500 dark:text-neutral-400">
-                              {s.parentName ? `${s.parentName} · ` : ''}{s.parentPhone || s.schoolName || ''}
-                            </p>
-                          </div>
-                        )}
+                        <span className="text-sm font-semibold text-slate-950 dark:text-white">
+                          <StudentName student={s} />
+                        </span>
+                        {s.schoolName && <span className="block text-xs text-slate-600 dark:text-neutral-400">{s.schoolName}</span>}
                       </button>
                     </td>
                     <td className="py-3 px-3 text-xs text-slate-700 dark:text-neutral-300 whitespace-nowrap">
                       Class {s.classLevel} · {s.board}
                       <span className="block text-[11px] font-medium text-sky-700 dark:text-sky-300">
-                        Payment: {s.feeDueDay}{s.feeDueDay === 1 || s.feeDueDay === 21 ? 'st' : s.feeDueDay === 2 || s.feeDueDay === 22 ? 'nd' : s.feeDueDay === 3 || s.feeDueDay === 23 ? 'rd' : 'th'} of month
+                        Payment: {formatOrdinal(s.feeDueDay)} of month
                       </span>
                     </td>
                     <td className="py-3 px-3 font-mono tabular-nums text-xs text-slate-700 dark:text-neutral-300 whitespace-nowrap">
@@ -879,15 +838,10 @@ const StudentFormModal: React.FC<StudentFormModalProps> = ({
   const [classLevel, setClassLevel] = useState<ClassLevel>(initialStudent?.classLevel ?? 7);
   const [board, setBoard] = useState<BoardType>(initialStudent?.board ?? 'CBSE');
   const [schoolName, setSchoolName] = useState(initialStudent?.schoolName ?? '');
-  const [parentName, setParentName] = useState(initialStudent?.parentName ?? '');
-  const [parentPhone, setParentPhone] = useState(initialStudent?.parentPhone ?? '');
-  const [preferredArrivalTime, setPreferredArrivalTime] = useState(initialStudent?.preferredArrivalTime ?? '18:00');
-  const [expectedDurationMinutes, setExpectedDurationMinutes] = useState(initialStudent?.expectedDurationMinutes ?? 120);
-  const [feeDueDay, setFeeDueDay] = useState(initialStudent?.feeDueDay ?? 5);
+  const [preferredArrivalTime, setPreferredArrivalTime] = useState(initialStudent?.preferredArrivalTime ?? workspace.settings.sessionStart);
+  const [feeDueDay, setFeeDueDay] = useState(initialStudent?.feeDueDay ?? workspace.settings.feeConfig.defaultDueDay);
   const [learningSpeed, setLearningSpeed] = useState<LearningSpeed>(initialStudent?.learningSpeed ?? 'steady');
   const [priority, setPriority] = useState<StudentPriority>(initialStudent?.priority ?? 'normal');
-  const [subjectsText, setSubjectsText] = useState((initialStudent?.subjects ?? ['All Subjects']).join(', '));
-  const [weaknessesText, setWeaknessesText] = useState((initialStudent?.weaknesses ?? []).join(', '));
   const [academicGoals, setAcademicGoals] = useState(initialStudent?.academicGoals ?? '');
   const [notes, setNotes] = useState(initialStudent?.notes ?? '');
 
@@ -964,20 +918,16 @@ const StudentFormModal: React.FC<StudentFormModalProps> = ({
 
       await onSubmit({
         fullName: fullName.trim(),
-        nickname: nickname.trim() || undefined,
+        nickname: nickname.trim() || null,
         classLevel,
         board,
         schoolName: schoolName.trim(),
-        parentName: parentName.trim(),
-        parentPhone: parentPhone.trim(),
         preferredArrivalTime,
-        allocatedSlot: `${preferredArrivalTime}–${workspace.settings.sessionEnd}`,
-        expectedDurationMinutes: Number(expectedDurationMinutes) || 120,
+        allocatedSlot: formatSessionSlot(preferredArrivalTime, 120),
+        expectedDurationMinutes: 120,
         feeDueDay,
         learningSpeed,
         priority,
-        subjects: subjectsText.trim() ? subjectsText.split(',').map((s) => s.trim()).filter(Boolean) : ['All Subjects'],
-        weaknesses: weaknessesText.trim() ? weaknessesText.split(',').map((s) => s.trim()).filter(Boolean) : [],
         academicGoals: academicGoals.trim(),
         notes: notes.trim(),
         feeOverride,
@@ -997,15 +947,15 @@ const StudentFormModal: React.FC<StudentFormModalProps> = ({
     >
       <form
         onSubmit={handleSubmit}
-        className="liquid-glass-strong w-full max-w-2xl max-h-[90vh] overflow-y-auto rounded-3xl p-6 space-y-5"
+        className="liquid-glass-strong flex flex-col w-full max-w-2xl max-h-[90dvh] overflow-hidden rounded-3xl"
       >
-        <div className="flex items-center justify-between">
+        <div className="flex items-center justify-between gap-3 px-4 sm:px-6 pt-5">
           <div>
             <h2 className="text-lg font-bold text-slate-950 dark:text-white">
               {initialStudent ? `Edit ${initialStudent.fullName}` : 'Enroll New Student'}
             </h2>
             <p className="text-xs text-slate-500 dark:text-neutral-400">
-              Monthly fee auto-calculates from Class & Board unless customized below
+              Monthly fee is based on class and board.
             </p>
           </div>
           <button type="button" onClick={onClose} aria-label="Close modal" className="p-2 rounded-xl hover:bg-sky-50 dark:hover:bg-white/10">
@@ -1013,294 +963,241 @@ const StudentFormModal: React.FC<StudentFormModalProps> = ({
           </button>
         </div>
 
-        {error && (
-          <div className="p-3 rounded-xl bg-rose-50 dark:bg-neutral-900 border border-rose-200 dark:border-white/25 text-xs text-rose-700 dark:text-white">
-            {error}
-          </div>
-        )}
-
-        <div className="grid sm:grid-cols-2 gap-3.5">
-          <div>
-            <label htmlFor="stu-name" className="block text-xs font-medium text-slate-700 dark:text-neutral-300 mb-1">
-              Student Full Name *
-            </label>
-            <input
-              id="stu-name"
-              required
-              value={fullName}
-              onChange={(e) => setFullName(e.target.value)}
-              placeholder="e.g. Aditya, Arjun, Ishika"
-              className="w-full px-3 py-2 rounded-xl bg-white/80 dark:bg-black border border-sky-200/80 dark:border-white/20 text-sm font-semibold text-slate-900 dark:text-white"
-            />
-          </div>
-          <div>
-            <label htmlFor="stu-nickname" className="block text-xs font-medium text-slate-700 dark:text-neutral-300 mb-1">
-              Nickname <span className="text-[10px] text-sky-600 dark:text-sky-400 font-normal">(Shown prominently on top)</span>
-            </label>
-            <input
-              id="stu-nickname"
-              value={nickname}
-              onChange={(e) => setNickname(e.target.value)}
-              placeholder="e.g. Adi, Abi, Pandu"
-              className="w-full px-3 py-2 rounded-xl bg-white/80 dark:bg-black border border-sky-200/80 dark:border-white/20 text-sm font-bold text-sky-700 dark:text-sky-300"
-            />
-          </div>
-          <div>
-            <label htmlFor="stu-class" className="block text-xs font-medium text-slate-700 dark:text-neutral-300 mb-1">
-              Class (3–10)
-            </label>
-            <select
-              id="stu-class"
-              value={classLevel}
-              onChange={(e) => setClassLevel(Number(e.target.value) as ClassLevel)}
-              className="w-full px-3 py-2 rounded-xl bg-white/80 dark:bg-black border border-sky-200/80 dark:border-white/20 text-sm text-slate-900 dark:text-white"
-            >
-              {[3, 4, 5, 6, 7, 8, 9, 10].map((c) => (
-                <option key={c} value={c}>Class {c}</option>
-              ))}
-            </select>
-          </div>
-          <div>
-            <label htmlFor="stu-board" className="block text-xs font-medium text-slate-700 dark:text-neutral-300 mb-1">
-              Board
-            </label>
-            <select
-              id="stu-board"
-              value={board}
-              onChange={(e) => setBoard(e.target.value as BoardType)}
-              className="w-full px-3 py-2 rounded-xl bg-white/80 dark:bg-black border border-sky-200/80 dark:border-white/20 text-sm text-slate-900 dark:text-white"
-            >
-              <option value="SSC">SSC / State Board</option>
-              <option value="CBSE">CBSE</option>
-              <option value="ICSE">ICSE</option>
-            </select>
-          </div>
-          <div className="sm:col-span-2 p-3.5 rounded-2xl bg-sky-50/80 dark:bg-sky-950/40 border-2 border-sky-300 dark:border-sky-700">
-            <div className="flex items-center justify-between mb-1.5">
-              <label htmlFor="stu-due" className="block text-xs font-bold text-sky-950 dark:text-sky-200">
-                📅 Monthly Fee Payment Date (Select day of month)
-              </label>
-              <span className="text-[11px] font-semibold text-sky-700 dark:text-sky-300 bg-sky-100 dark:bg-sky-900/60 px-2 py-0.5 rounded-lg">
-                1-Day Advance Reminder
-              </span>
-            </div>
-            <select
-              id="stu-due"
-              value={feeDueDay}
-              onChange={(e) => setFeeDueDay(Number(e.target.value))}
-              className="w-full px-3.5 py-2.5 rounded-xl bg-white dark:bg-black border border-sky-300 dark:border-sky-600 text-sm font-bold text-slate-900 dark:text-white focus:ring-2 focus:ring-sky-500"
-            >
-              {[...Array(28)].map((_, i) => {
-                const day = i + 1;
-                const suffix = day === 1 || day === 21 ? 'st' : day === 2 || day === 22 ? 'nd' : day === 3 || day === 23 ? 'rd' : 'th';
-                return (
-                  <option key={day} value={day}>
-                    Payment on {day}{suffix} of every month {day === 5 ? '(Default)' : ''}
-                  </option>
-                );
-              })}
-            </select>
-            <p className="text-xs text-sky-800 dark:text-sky-300 mt-1.5 font-medium flex items-center gap-1">
-              🔔 Reminder alert sent automatically 1 day before on desktop & mobile (on day {feeDueDay > 1 ? feeDueDay - 1 : 28})
-            </p>
-          </div>
-          <div>
-            <label htmlFor="stu-dur" className="block text-xs font-medium text-slate-700 dark:text-neutral-300 mb-1">
-              Tuition Duration
-            </label>
-            <select
-              id="stu-dur"
-              value={expectedDurationMinutes}
-              onChange={(e) => setExpectedDurationMinutes(Number(e.target.value))}
-              className="w-full px-3 py-2 rounded-xl bg-white/80 dark:bg-black border border-sky-200/80 dark:border-white/20 text-sm font-medium text-slate-900 dark:text-white"
-            >
-              <option value={120}>2 hours (120 mins) — Default</option>
-              <option value={90}>1.5 hours (90 mins)</option>
-              <option value={60}>1 hour (60 mins)</option>
-              <option value={150}>2.5 hours (150 mins)</option>
-            </select>
-          </div>
-          <div>
-            <label htmlFor="stu-arrival" className="block text-xs font-medium text-slate-700 dark:text-neutral-300 mb-1">
-              Arrival Time (IST)
-            </label>
-            <input
-              id="stu-arrival"
-              type="time"
-              value={preferredArrivalTime}
-              onChange={(e) => setPreferredArrivalTime(e.target.value)}
-              className="w-full px-3 py-2 rounded-xl bg-white/80 dark:bg-black border border-sky-200/80 dark:border-white/20 text-sm font-mono text-slate-900 dark:text-white"
-            />
-          </div>
-          <div>
-            <label htmlFor="stu-school" className="block text-xs font-medium text-slate-700 dark:text-neutral-300 mb-1">
-              School Name (Optional)
-            </label>
-            <input
-              id="stu-school"
-              value={schoolName}
-              onChange={(e) => setSchoolName(e.target.value)}
-              placeholder="e.g. Kendriya Vidyalaya"
-              className="w-full px-3 py-2 rounded-xl bg-white/80 dark:bg-black border border-sky-200/80 dark:border-white/20 text-sm text-slate-900 dark:text-white"
-            />
-          </div>
-          <div>
-            <label htmlFor="stu-parent" className="block text-xs font-medium text-slate-700 dark:text-neutral-300 mb-1">
-              Parent / Guardian Name (Optional)
-            </label>
-            <input
-              id="stu-parent"
-              value={parentName}
-              onChange={(e) => setParentName(e.target.value)}
-              placeholder="Optional"
-              className="w-full px-3 py-2 rounded-xl bg-white/80 dark:bg-black border border-sky-200/80 dark:border-white/20 text-sm text-slate-900 dark:text-white"
-            />
-          </div>
-          <div>
-            <label htmlFor="stu-phone" className="block text-xs font-medium text-slate-700 dark:text-neutral-300 mb-1">
-              Parent Phone (Optional)
-            </label>
-            <input
-              id="stu-phone"
-              value={parentPhone}
-              onChange={(e) => setParentPhone(e.target.value)}
-              placeholder="Optional"
-              className="w-full px-3 py-2 rounded-xl bg-white/80 dark:bg-black border border-sky-200/80 dark:border-white/20 text-sm font-mono text-slate-900 dark:text-white"
-            />
-          </div>
-          <div className="sm:col-span-2">
-            <label htmlFor="stu-goals" className="block text-xs font-medium text-slate-700 dark:text-neutral-300 mb-1">
-              Academic Goals (Optional)
-            </label>
-            <input
-              id="stu-goals"
-              value={academicGoals}
-              onChange={(e) => setAcademicGoals(e.target.value)}
-              placeholder="e.g. Aiming for 90%+ in final exams"
-              className="w-full px-3 py-2 rounded-xl bg-white/80 dark:bg-black border border-sky-200/80 dark:border-white/20 text-sm text-slate-900 dark:text-white"
-            />
-          </div>
-        </div>
-
-        {/* Live Fee Calculation Preview & Custom Override */}
-        <div className="rounded-2xl p-4 bg-sky-50/75 dark:bg-neutral-900 border border-sky-200/70 dark:border-white/15 space-y-3">
-          <div className="flex flex-wrap items-center justify-between gap-2">
-            <div>
-              <p className="text-xs font-semibold text-slate-900 dark:text-white">
-                Calculated Monthly Fee: <span className="font-mono text-base">{formatRupeesFromPaise(previewCalc.finalAmountPaise)}</span>
-              </p>
-              <p className="text-[11px] text-slate-600 dark:text-neutral-400">
-                {previewCalc.steps.slice(0, -1).join(' · ')}
-              </p>
-            </div>
-            <label className="inline-flex items-center gap-2 text-xs font-medium text-slate-800 dark:text-neutral-200 cursor-pointer">
-              <input
-                type="checkbox"
-                checked={useOverride}
-                onChange={(e) => setUseOverride(e.target.checked)}
-                className="accent-sky-600 dark:accent-white"
-              />
-              <span>Custom Fee Override</span>
-            </label>
-          </div>
-
-          {useOverride && (
-            <div className="grid sm:grid-cols-3 gap-2.5 pt-2 border-t border-sky-200/60 dark:border-white/10">
-              <div>
-                <label className="block text-[11px] text-slate-600 dark:text-neutral-400 mb-1">Custom Amount (₹)</label>
-                <input
-                  type="number"
-                  min={0}
-                  value={overrideRupees}
-                  onChange={(e) => setOverrideRupees(e.target.value)}
-                  placeholder="e.g. 650"
-                  className="w-full px-2.5 py-1.5 rounded-lg bg-white dark:bg-black border border-sky-200 dark:border-white/20 text-xs font-mono text-slate-900 dark:text-white"
-                />
-              </div>
-              <div>
-                <label className="block text-[11px] text-slate-600 dark:text-neutral-400 mb-1">Reason</label>
-                <input
-                  value={overrideReason}
-                  onChange={(e) => setOverrideReason(e.target.value)}
-                  placeholder="Sibling / special plan"
-                  className="w-full px-2.5 py-1.5 rounded-lg bg-white dark:bg-black border border-sky-200 dark:border-white/20 text-xs text-slate-900 dark:text-white"
-                />
-              </div>
-              <div className="flex items-end">
-                <label className="inline-flex items-center gap-1.5 text-xs text-slate-700 dark:text-neutral-300 py-1.5">
-                  <input
-                    type="checkbox"
-                    checked={overrideTemporary}
-                    onChange={(e) => setOverrideTemporary(e.target.checked)}
-                  />
-                  <span>Temporary dates</span>
-                </label>
-              </div>
-              {overrideTemporary && (
-                <>
-                  <div>
-                    <label className="block text-[11px] text-slate-600 dark:text-neutral-400 mb-1">Start Date</label>
-                    <input
-                      type="date"
-                      value={overrideStart}
-                      onChange={(e) => setOverrideStart(e.target.value)}
-                      className="w-full px-2.5 py-1.5 rounded-lg bg-white dark:bg-black border border-sky-200 dark:border-white/20 text-xs font-mono"
-                    />
-                  </div>
-                  <div>
-                    <label className="block text-[11px] text-slate-600 dark:text-neutral-400 mb-1">End Date</label>
-                    <input
-                      type="date"
-                      value={overrideEnd}
-                      onChange={(e) => setOverrideEnd(e.target.value)}
-                      className="w-full px-2.5 py-1.5 rounded-lg bg-white dark:bg-black border border-sky-200 dark:border-white/20 text-xs font-mono"
-                    />
-                  </div>
-                </>
-              )}
+        <div className="min-h-0 overflow-y-auto px-4 py-4 sm:px-6 space-y-5">
+          {error && (
+            <div role="alert" className="p-3 rounded-xl bg-rose-50 dark:bg-neutral-900 border border-rose-200 dark:border-white/25 text-xs text-rose-700 dark:text-white">
+              {error}
             </div>
           )}
+
+          <div className="grid sm:grid-cols-2 gap-3.5">
+            <div>
+              <label htmlFor="stu-name" className="block text-xs font-medium text-slate-700 dark:text-neutral-300 mb-1">
+                Student Full Name *
+              </label>
+              <input
+                id="stu-name"
+                required
+                maxLength={100}
+                value={fullName}
+                onChange={(e) => setFullName(e.target.value)}
+                placeholder="e.g. Aditya, Arjun, Ishika"
+                className="w-full px-3 py-2 rounded-xl bg-white/80 dark:bg-black border border-sky-200/80 dark:border-white/20 text-sm font-semibold text-slate-900 dark:text-white"
+              />
+            </div>
+            <div>
+              <label htmlFor="stu-nickname" className="block text-xs font-medium text-slate-700 dark:text-neutral-300 mb-1">
+                Nickname (optional)
+              </label>
+              <input
+                id="stu-nickname"
+                maxLength={50}
+                value={nickname}
+                onChange={(e) => setNickname(e.target.value)}
+                placeholder="e.g. Adi, Abi, Pandu"
+                className="w-full px-3 py-2 rounded-xl bg-white/80 dark:bg-black border border-sky-200/80 dark:border-white/20 text-sm font-bold text-sky-700 dark:text-sky-300"
+              />
+            </div>
+            <div>
+              <label htmlFor="stu-class" className="block text-xs font-medium text-slate-700 dark:text-neutral-300 mb-1">
+                Class (3–10)
+              </label>
+              <select
+                id="stu-class"
+                value={classLevel}
+                onChange={(e) => setClassLevel(Number(e.target.value) as ClassLevel)}
+                className="w-full px-3 py-2 rounded-xl bg-white/80 dark:bg-black border border-sky-200/80 dark:border-white/20 text-sm text-slate-900 dark:text-white"
+              >
+                {[3, 4, 5, 6, 7, 8, 9, 10].map((c) => (
+                  <option key={c} value={c}>Class {c}</option>
+                ))}
+              </select>
+            </div>
+            <div>
+              <label htmlFor="stu-board" className="block text-xs font-medium text-slate-700 dark:text-neutral-300 mb-1">
+                Board
+              </label>
+              <select
+                id="stu-board"
+                value={board}
+                onChange={(e) => setBoard(e.target.value as BoardType)}
+                className="w-full px-3 py-2 rounded-xl bg-white/80 dark:bg-black border border-sky-200/80 dark:border-white/20 text-sm text-slate-900 dark:text-white"
+              >
+                <option value="SSC">SSC / State Board</option>
+                <option value="CBSE">CBSE</option>
+                <option value="ICSE">ICSE</option>
+              </select>
+            </div>
+            <div className="sm:col-span-2">
+              <label htmlFor="stu-due" className="block text-sm font-semibold text-slate-900 dark:text-white mb-1">
+                Monthly payment date
+              </label>
+              <select
+                id="stu-due"
+                aria-describedby="stu-due-help"
+                value={feeDueDay}
+                onChange={(e) => setFeeDueDay(Number(e.target.value))}
+                className="w-full min-h-11 px-3 py-2 rounded-xl bg-white dark:bg-black border border-sky-200 dark:border-white/20 text-sm text-slate-900 dark:text-white"
+              >
+                {Array.from({ length: 31 }, (_, i) => i + 1).map((day) => (
+                  <option key={day} value={day}>{formatOrdinal(day)} of every month</option>
+                ))}
+              </select>
+              <p id="stu-due-help" className="mt-1.5 text-xs text-slate-600 dark:text-neutral-400">
+                Reminder one day before.{feeDueDay > 28 && ' In shorter months, payment is due on the last day.'}
+              </p>
+            </div>
+            <div>
+              <label htmlFor="stu-arrival" className="block text-xs font-medium text-slate-700 dark:text-neutral-300 mb-1">
+                Arrival time (IST) · 2-hour session
+              </label>
+              <input
+                id="stu-arrival"
+                type="time"
+                required
+                value={preferredArrivalTime}
+                onChange={(e) => setPreferredArrivalTime(e.target.value)}
+                className="w-full px-3 py-2 rounded-xl bg-white/80 dark:bg-black border border-sky-200/80 dark:border-white/20 text-sm font-mono text-slate-900 dark:text-white"
+              />
+            </div>
+            <div>
+              <label htmlFor="stu-school" className="block text-xs font-medium text-slate-700 dark:text-neutral-300 mb-1">
+                School Name (Optional)
+              </label>
+              <input
+                id="stu-school"
+                maxLength={120}
+                value={schoolName}
+                onChange={(e) => setSchoolName(e.target.value)}
+                placeholder="e.g. Kendriya Vidyalaya"
+                className="w-full px-3 py-2 rounded-xl bg-white/80 dark:bg-black border border-sky-200/80 dark:border-white/20 text-sm text-slate-900 dark:text-white"
+              />
+            </div>
+          </div>
+
+          {/* Live Fee Calculation Preview & Custom Override */}
+          <div className="rounded-2xl p-4 bg-sky-50/75 dark:bg-neutral-900 border border-sky-200/70 dark:border-white/15 space-y-3">
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <div>
+                <p className="text-xs font-semibold text-slate-900 dark:text-white">
+                  Calculated Monthly Fee: <span className="font-mono text-base">{formatRupeesFromPaise(previewCalc.finalAmountPaise)}</span>
+                </p>
+                <p className="text-[11px] text-slate-600 dark:text-neutral-400">
+                  {previewCalc.steps.slice(0, -1).join(' · ')}
+                </p>
+              </div>
+              <label className="inline-flex items-center gap-2 text-xs font-medium text-slate-800 dark:text-neutral-200 cursor-pointer">
+                <input
+                  type="checkbox"
+                  checked={useOverride}
+                  onChange={(e) => setUseOverride(e.target.checked)}
+                  className="accent-sky-600 dark:accent-white"
+                />
+                <span>Custom Fee Override</span>
+              </label>
+            </div>
+
+            {useOverride && (
+              <div className="grid sm:grid-cols-3 gap-2.5 pt-2 border-t border-sky-200/60 dark:border-white/10">
+                <div>
+                  <label className="block text-[11px] text-slate-600 dark:text-neutral-400 mb-1">Custom Amount (₹)</label>
+                  <input
+                    type="number"
+                    min={0}
+                    value={overrideRupees}
+                    onChange={(e) => setOverrideRupees(e.target.value)}
+                    placeholder="e.g. 650"
+                    className="w-full px-2.5 py-1.5 rounded-lg bg-white dark:bg-black border border-sky-200 dark:border-white/20 text-xs font-mono text-slate-900 dark:text-white"
+                  />
+                </div>
+                <div>
+                  <label className="block text-[11px] text-slate-600 dark:text-neutral-400 mb-1">Reason</label>
+                  <input
+                    value={overrideReason}
+                    onChange={(e) => setOverrideReason(e.target.value)}
+                    placeholder="Sibling / special plan"
+                    className="w-full px-2.5 py-1.5 rounded-lg bg-white dark:bg-black border border-sky-200 dark:border-white/20 text-xs text-slate-900 dark:text-white"
+                  />
+                </div>
+                <div className="flex items-end">
+                  <label className="inline-flex items-center gap-1.5 text-xs text-slate-700 dark:text-neutral-300 py-1.5">
+                    <input
+                      type="checkbox"
+                      checked={overrideTemporary}
+                      onChange={(e) => setOverrideTemporary(e.target.checked)}
+                    />
+                    <span>Temporary dates</span>
+                  </label>
+                </div>
+                {overrideTemporary && (
+                  <>
+                    <div>
+                      <label className="block text-[11px] text-slate-600 dark:text-neutral-400 mb-1">Start Date</label>
+                      <input
+                        type="date"
+                        value={overrideStart}
+                        onChange={(e) => setOverrideStart(e.target.value)}
+                        className="w-full px-2.5 py-1.5 rounded-lg bg-white dark:bg-black border border-sky-200 dark:border-white/20 text-xs font-mono"
+                      />
+                    </div>
+                    <div>
+                      <label className="block text-[11px] text-slate-600 dark:text-neutral-400 mb-1">End Date</label>
+                      <input
+                        type="date"
+                        value={overrideEnd}
+                        onChange={(e) => setOverrideEnd(e.target.value)}
+                        className="w-full px-2.5 py-1.5 rounded-lg bg-white dark:bg-black border border-sky-200 dark:border-white/20 text-xs font-mono"
+                      />
+                    </div>
+                  </>
+                )}
+              </div>
+            )}
+          </div>
+
+          <div className="grid sm:grid-cols-2 gap-3.5">
+            <div>
+              <label htmlFor="stu-goals" className="block text-xs font-medium text-slate-700 dark:text-neutral-300 mb-1">
+                Academic goals (optional)
+              </label>
+              <input
+                id="stu-goals"
+                maxLength={300}
+                value={academicGoals}
+                onChange={(e) => setAcademicGoals(e.target.value)}
+                placeholder="e.g. Score 90%+ in Math & Science"
+                className="w-full px-3 py-2 rounded-xl bg-white/80 dark:bg-black border border-sky-200/80 dark:border-white/20 text-sm text-slate-900 dark:text-white"
+              />
+            </div>
+            <div>
+              <label htmlFor="stu-notes" className="block text-xs font-medium text-slate-700 dark:text-neutral-300 mb-1">
+                Teacher Notes
+              </label>
+              <input
+                id="stu-notes"
+                maxLength={1000}
+                value={notes}
+                onChange={(e) => setNotes(e.target.value)}
+                placeholder="Study habits or other notes"
+                className="w-full px-3 py-2 rounded-xl bg-white/80 dark:bg-black border border-sky-200/80 dark:border-white/20 text-sm text-slate-900 dark:text-white"
+              />
+            </div>
+          </div>
+
         </div>
 
-        <div className="grid sm:grid-cols-2 gap-3.5">
-          <div>
-            <label htmlFor="stu-goals" className="block text-xs font-medium text-slate-700 dark:text-neutral-300 mb-1">
-              Academic Goals
-            </label>
-            <input
-              id="stu-goals"
-              value={academicGoals}
-              onChange={(e) => setAcademicGoals(e.target.value)}
-              placeholder="e.g. Score 90%+ in Math & Science"
-              className="w-full px-3 py-2 rounded-xl bg-white/80 dark:bg-black border border-sky-200/80 dark:border-white/20 text-sm text-slate-900 dark:text-white"
-            />
-          </div>
-          <div>
-            <label htmlFor="stu-notes" className="block text-xs font-medium text-slate-700 dark:text-neutral-300 mb-1">
-              Teacher Notes
-            </label>
-            <input
-              id="stu-notes"
-              value={notes}
-              onChange={(e) => setNotes(e.target.value)}
-              placeholder="Important study habits or parent preferences"
-              className="w-full px-3 py-2 rounded-xl bg-white/80 dark:bg-black border border-sky-200/80 dark:border-white/20 text-sm text-slate-900 dark:text-white"
-            />
-          </div>
-        </div>
-
-        <div className="flex justify-end gap-2.5 pt-2">
+        <div className="flex justify-end gap-2.5 border-t border-sky-100 px-4 py-3 sm:px-6 dark:border-white/15">
           <button
             type="button"
             onClick={onClose}
-            className="px-4 py-2.5 rounded-xl text-xs font-medium border border-sky-200 dark:border-white/20 text-slate-700 dark:text-neutral-300"
+            className="min-h-11 px-4 py-2.5 rounded-xl text-xs font-medium border border-sky-200 dark:border-white/20 text-slate-700 dark:text-neutral-300"
           >
             Cancel
           </button>
           <button
             type="submit"
             disabled={saving}
-            className="px-5 py-2.5 rounded-xl text-xs font-semibold bg-sky-600 hover:bg-sky-700 dark:bg-white dark:hover:bg-neutral-200 text-white dark:text-black disabled:opacity-60"
+            className="min-h-11 px-5 py-2.5 rounded-xl text-xs font-semibold bg-sky-600 hover:bg-sky-700 dark:bg-white dark:hover:bg-neutral-200 text-white dark:text-black disabled:opacity-60"
           >
             {saving ? 'Saving...' : initialStudent ? 'Save Changes' : 'Enroll Student'}
           </button>

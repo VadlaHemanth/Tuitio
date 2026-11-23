@@ -58,6 +58,17 @@ export function formatHHMMTo12Hour(hhmm: string): string {
   return formatMinutesTo12Hour(parseTimeToMinutes(hhmm));
 }
 
+export function formatSessionSlot(arrival: string, duration: number): string {
+  const end = (parseTimeToMinutes(arrival) + duration) % 1440;
+  return `${arrival}–${String(Math.floor(end / 60)).padStart(2, '0')}:${String(end % 60).padStart(2, '0')}`;
+}
+
+export function formatOrdinal(day: number): string {
+  const suffixes = ['th', 'st', 'nd', 'rd'];
+  const suffix = day >= 11 && day <= 13 ? 'th' : suffixes[day % 10] ?? 'th';
+  return `${day}${suffix}`;
+}
+
 export function daysInMonth(year: number, month: number): number {
   return new Date(Date.UTC(year, month, 0)).getUTCDate();
 }

@@ -1,3 +1,4 @@
+import { StudentName } from './StudentName';
 import React, { useMemo, useState } from 'react';
 import {
   AlertTriangle,
@@ -315,7 +316,7 @@ export const PlannerView: React.FC<PlannerViewProps> = ({
                       onClick={() => onOpenStudent(sp.studentId)}
                       className="text-sm font-bold text-slate-950 dark:text-white hover:underline text-left"
                     >
-                      {i + 1}. {sp.studentName}
+                      {i + 1}. <StudentName student={workspace.students.find((student) => student.id === sp.studentId)} />
                     </button>
                     <p className="text-xs text-slate-500 dark:text-neutral-400">
                       Class {sp.classLevel} · {sp.board} · Arrives {formatHHMMTo12Hour(sp.arrivalTime)}

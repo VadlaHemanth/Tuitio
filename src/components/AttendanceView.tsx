@@ -1,3 +1,4 @@
+import { StudentName } from './StudentName';
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import { motion, useMotionValue, useTransform } from 'motion/react';
 import {
@@ -519,7 +520,7 @@ export const AttendanceView: React.FC<AttendanceViewProps> = ({
                 return (
                   <tr key={s.id}>
                     <td className="py-2.5 pr-3 font-medium text-slate-900 dark:text-white whitespace-nowrap">
-                      {s.fullName}
+                      <StudentName student={s} />
                     </td>
                     {calendarDays.map((d) => {
                       const rec = workspace.attendance.find((a) => a.studentId === s.id && a.date === d);

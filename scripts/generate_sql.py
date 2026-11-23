@@ -1,5 +1,4 @@
 import os
-import json
 
 students = [
     # id, code, name, nickname, class_level, board, color, adm_date
@@ -12,8 +11,8 @@ students = [
     ("stu-abhinav-109", "STU-109", "Abhinav", None, 4, "SSC", "#14B8A6", "2026-11-01"),
     ("stu-lohitaksh-110", "STU-110", "Lohitaksh", None, 4, "CBSE", "#84CC16", "2026-11-01"),
     ("stu-likhith-111", "STU-111", "Likhith Sai", None, 9, "CBSE", "#EAB308", "2026-11-04"),
-    ("stu-lucky-112", "STU-112", "Lucky", None, 5, "SSC", "#A855F7", "2026-11-20"),
-    ("stu-ishika-113", "STU-113", "Ishika", "Pandu", 4, "SSC", "#F43F5E", "2026-11-20"),
+    ("stu-lucky-112", "STU-112", "Lucky", None, 5, "SSC", "#A855F7", "2026-11-19"),
+    ("stu-ishika-113", "STU-113", "Ishika", "Pandu", 4, "SSC", "#F43F5E", "2026-11-19"),
 ]
 
 dates = [
@@ -36,7 +35,7 @@ sambashiva_att = ['P','P','A','A', 'P','P','P','P', 'A','A','A','A','A','A', 'A'
 # Ruthvik (SSC 4, Dhruthik)
 ruthvik_ssc_att = ['P','P','A','A', 'P','P','P','P', 'A','A','A','A','A','A', 'A']
 # Ruthvik (CBSE 9)
-ruthvik_cbse_att = ['A','A','P','P', 'P','P','P','P', 'A','A','P','P','A','P', 'P']
+ruthvik_cbse_att = ['A','A','P','P', 'P','P','P','P', 'A','A','P','P','A','P', 'A']
 # Karthik
 karthik_att = ['A','P','P','A', 'P','A','A','P', 'A','A','P','P','A','P', 'P']
 # Abhinav
@@ -44,11 +43,11 @@ abhinav_att = ['P','P','P','P', 'P','P','P','P', 'A','P','P','A','P','P', 'P']
 # Lohitaksh
 lohitaksh_att = ['P','P','P','P', 'A','P','P','P', 'P','P','P','P','P','P', 'P']
 # Likhith Sai (joined Nov 4)
-likhith_att = ['A','P','P','P', 'A','P','A','P', 'P','P','A','A','A','P', 'P']
-# Lucky (joined Nov 20)
-lucky_att = [None,None,None,None, None,None,None,None, None,None,None,None, 'P','P', 'P']
-# Ishika / Pandu (joined Nov 20)
-ishika_att = [None,None,None,None, None,None,None,None, None,None,None,None, 'P','P', 'P']
+likhith_att = [None,'P','P','P', 'A','P','A','A', 'P','P','A','A','A','P', 'P']
+# Lucky (joined Nov 19)
+lucky_att = [None,None,None,None, None,None,None,None, None,None,None,'P', 'P','P', 'P']
+# Ishika / Pandu (joined Nov 19)
+ishika_att = [None,None,None,None, None,None,None,None, None,None,None,'P', 'P','P', 'P']
 
 attendance_data = {
     "stu-13f6c343556a": aditya_att,
@@ -78,7 +77,7 @@ lines.append("UPDATE students SET nickname = 'Abi', expected_duration_minutes = 
 lines.append("\n-- 2. Insert new students")
 for sid, code, name, nick, class_level, board, color, adm in students:
     nick_val = f"'{nick}'" if nick else "NULL"
-    lines.append(f"""INSERT OR REPLACE INTO students (
+    lines.append(f"""INSERT OR IGNORE INTO students (
   id, student_code, full_name, nickname, avatar_color,
   class_level, board, school_name, admission_date, date_of_birth,
   student_phone, parent_name, parent_phone, emergency_contact, address,
@@ -90,8 +89,8 @@ for sid, code, name, nick, class_level, board, color, adm in students:
 ) VALUES (
   '{sid}', '{code}', '{name}', {nick_val}, '{color}',
   {class_level}, '{board}', '', '{adm}', NULL,
-  NULL, 'Parent', '', NULL, NULL,
-  '["All Subjects"]', '[]', '[]', 75,
+  NULL, '', '', NULL, NULL,
+  '[]', '[]', '[]', 75,
   '18:00', '18:00–20:00', 120,
   '[1,2,3,4,5,6]', 5, NULL, 0,
   '', 'steady', 'normal', '', 'active', 0,
@@ -100,16 +99,13 @@ for sid, code, name, nick, class_level, board, color, adm in students:
 
 # 3. Attendance
 lines.append("\n-- 3. Insert Attendance records")
-att_counter = 1
 for sid, att_list in attendance_data.items():
     for d, status_char in zip(dates, att_list):
         if not status_char:
             continue
         att_id = f"att-{sid[-10:]}-{d.replace('-', '')}"
         status = "present" if status_char == "P" else "absent"
-        arr = "'18:00'" if status == "present" else "NULL"
-        dep = "'20:00'" if status == "present" else "NULL"
-        lines.append(f"INSERT OR REPLACE INTO attendance (id, student_id, date, status, actual_arrival_time, departure_time, note, is_demo, updated_at) VALUES ('{att_id}', '{sid}', '{d}', '{status}', {arr}, {dep}, '', 0, '{now}');")
+        lines.append(f"INSERT OR IGNORE INTO attendance (id, student_id, date, status, actual_arrival_time, departure_time, note, is_demo, updated_at) VALUES ('{att_id}', '{sid}', '{d}', '{status}', NULL, NULL, '', 0, '{now}');")
 
 os.makedirs("scripts", exist_ok=True)
 with open("scripts/import.sql", "w", encoding="utf-8") as f:

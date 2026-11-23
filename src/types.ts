@@ -101,7 +101,7 @@ export interface Student {
   allocatedSlot: string; // e.g. "18:00–19:30"
   expectedDurationMinutes: number;
   regularDays: number[]; // 0=Sun..6=Sat
-  feeDueDay: number; // 1-28
+  feeDueDay: number; // 1–31, clamped to the last day of shorter months
   feeOverride?: StudentFeeOverride | null;
   creditBalancePaise: number;
   notes: string;

@@ -3,6 +3,7 @@ import path from 'node:path';
 import express from 'express';
 import { createServer as createViteServer } from 'vite';
 import { z } from 'zod';
+import { studentCreateSchema, studentPatchSchema } from './server/studentPayload';
 import {
   clearDemoWorkspace,
   createSession,
@@ -25,7 +26,7 @@ import {
   computeInvoiceStatus,
 } from './src/engines/feeEngine';
 import { buildCarryForwardHomeworkDrafts } from './src/engines/schedulerEngine';
-import { addDaysToDateStr, formatIstDate, formatIstMonthKey, formatRupeesFromPaise } from './src/engines/istDate';
+import { addDaysToDateStr, buildDueDateForMonth, formatIstDate, formatIstMonthKey, formatRupeesFromPaise } from './src/engines/istDate';
 import type { BoardType, ClassLevel, Student, TuitionSettings } from './src/types';
 
 const PORT = Number(process.env.PORT || 3000);
@@ -317,55 +318,17 @@ async function startServer() {
   });
 
   // --- STUDENTS ---
-  const studentPayloadSchema = z.object({
-    fullName: z.string().trim().min(1).max(100),
-    nickname: z.string().trim().max(50).optional().nullable(),
-    classLevel: z.number().int().min(3).max(10),
-    board: z.enum(['SSC', 'CBSE', 'ICSE']),
-    schoolName: z.string().trim().max(120).default(''),
-    admissionDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional(),
-    dateOfBirth: z.string().optional(),
-    studentPhone: z.string().max(25).optional(),
-    parentName: z.string().trim().max(100).default(''),
-    parentPhone: z.string().trim().max(25).default(''),
-    emergencyContact: z.string().max(25).optional(),
-    address: z.string().max(240).optional(),
-    subjects: z.array(z.string().trim()).default(['All Subjects']),
-    strengths: z.array(z.string().trim()).default([]),
-    weaknesses: z.array(z.string().trim()).default([]),
-    academicPerformance: z.number().min(0).max(100).default(75),
-    preferredArrivalTime: z.string().regex(/^\d{2}:\d{2}$/).default('18:00'),
-    allocatedSlot: z.string().max(40).default('18:00–20:00'),
-    expectedDurationMinutes: z.number().int().min(30).max(240).default(120),
-    regularDays: z.array(z.number().int().min(0).max(6)).default([1, 2, 3, 4, 5, 6]),
-    feeDueDay: z.number().int().min(1).max(28).default(5),
-    feeOverride: z
-      .object({
-        amountPaise: z.number().int().min(0),
-        isTemporary: z.boolean(),
-        startDate: z.string().optional(),
-        endDate: z.string().optional(),
-        reason: z.string().optional(),
-      })
-      .nullable()
-      .optional(),
-    notes: z.string().max(1000).default(''),
-    learningSpeed: z.enum(['fast', 'steady', 'needs_support']).default('steady'),
-    priority: z.enum(['high', 'normal', 'low']).default('normal'),
-    academicGoals: z.string().max(300).default(''),
-  });
 
   app.post('/api/students', (req, res) => {
-    const parsed = studentPayloadSchema.safeParse(req.body);
+    const parsed = studentCreateSchema.safeParse(req.body);
     if (!parsed.success) {
       return res.status(400).json({ error: 'Invalid student fields', details: parsed.error.flatten() });
     }
     const d = parsed.data;
     const id = generateId('stu');
-    const countRow = db.prepare('SELECT COUNT(*) as c FROM students').get() as { c: number };
-    const code = `TUI-${String(countRow.c + 101).padStart(3, '0')}`;
     const palette = ['#0284C7', '#0369A1', '#0EA5E9', '#075985', '#38BDF8'];
-    const color = palette[countRow.c % palette.length];
+    const color = d.avatarColor ?? palette[parseInt(id.slice(-2), 16) % palette.length];
+    const dueDay = d.feeDueDay ?? getSettings().feeConfig.defaultDueDay;
     const now = new Date().toISOString();
     const admDate = d.admissionDate || formatIstDate(new Date());
 
@@ -375,12 +338,14 @@ async function startServer() {
         admission_date, date_of_birth, student_phone, parent_name, parent_phone,
         emergency_contact, address, subjects_json, strengths_json, weaknesses_json,
         academic_performance, preferred_arrival_time, allocated_slot, expected_duration_minutes,
-        regular_days_json, fee_due_day, fee_override_json, credit_balance_paise, notes,
+        regular_days_json, fee_due_day, monthly_payment_day, fee_override_json, credit_balance_paise, notes,
         learning_speed, priority, academic_goals, status, is_demo, created_at, updated_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?, ?, 'active', 0, ?, ?)
+      )
+      SELECT ?, printf('TUI-%03d', COALESCE(MAX(CAST(substr(student_code, 5) AS INTEGER)), 100) + 1),
+        ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?, ?, 'active', 0, ?, ?
+      FROM students WHERE student_code GLOB 'TUI-[0-9]*' AND substr(student_code, 5) NOT GLOB '*[^0-9]*'
     `).run(
       id,
-      code,
       d.fullName,
       d.nickname || null,
       color,
@@ -402,7 +367,8 @@ async function startServer() {
       d.allocatedSlot,
       d.expectedDurationMinutes,
       JSON.stringify(d.regularDays),
-      d.feeDueDay,
+      Math.min(dueDay, 28),
+      dueDay,
       d.feeOverride ? JSON.stringify(d.feeOverride) : null,
       d.notes,
       d.learningSpeed,
@@ -417,7 +383,7 @@ async function startServer() {
   });
 
   const handleUpdateStudent = (req: express.Request, res: express.Response) => {
-    const parsed = studentPayloadSchema.partial().safeParse(req.body);
+    const parsed = studentPatchSchema.safeParse(req.body);
     if (!parsed.success) {
       return res.status(400).json({ error: 'Invalid student update payload.' });
     }
@@ -426,70 +392,93 @@ async function startServer() {
 
     const d = parsed.data;
     const now = new Date().toISOString();
-    db.prepare(`
-      UPDATE students SET
-        full_name = COALESCE(?, full_name),
-        nickname = COALESCE(?, nickname),
-        class_level = COALESCE(?, class_level),
-        board = COALESCE(?, board),
-        school_name = COALESCE(?, school_name),
-        admission_date = COALESCE(?, admission_date),
-        date_of_birth = COALESCE(?, date_of_birth),
-        student_phone = COALESCE(?, student_phone),
-        parent_name = COALESCE(?, parent_name),
-        parent_phone = COALESCE(?, parent_phone),
-        emergency_contact = COALESCE(?, emergency_contact),
-        address = COALESCE(?, address),
-        subjects_json = COALESCE(?, subjects_json),
-        strengths_json = COALESCE(?, strengths_json),
-        weaknesses_json = COALESCE(?, weaknesses_json),
-        academic_performance = COALESCE(?, academic_performance),
-        preferred_arrival_time = COALESCE(?, preferred_arrival_time),
-        allocated_slot = COALESCE(?, allocated_slot),
-        expected_duration_minutes = COALESCE(?, expected_duration_minutes),
-        regular_days_json = COALESCE(?, regular_days_json),
-        fee_due_day = COALESCE(?, fee_due_day),
-        fee_override_json = ?,
-        notes = COALESCE(?, notes),
-        learning_speed = COALESCE(?, learning_speed),
-        priority = COALESCE(?, priority),
-        academic_goals = COALESCE(?, academic_goals),
-        updated_at = ?
-      WHERE id = ?
-    `).run(
-      d.fullName ?? null,
-      d.nickname !== undefined ? (d.nickname ? d.nickname : null) : null,
-      d.classLevel ?? null,
-      d.board ?? null,
-      d.schoolName ?? null,
-      d.admissionDate ?? null,
-      d.dateOfBirth ?? null,
-      d.studentPhone ?? null,
-      d.parentName ?? null,
-      d.parentPhone ?? null,
-      d.emergencyContact ?? null,
-      d.address ?? null,
-      d.subjects ? JSON.stringify(d.subjects) : null,
-      d.strengths ? JSON.stringify(d.strengths) : null,
-      d.weaknesses ? JSON.stringify(d.weaknesses) : null,
-      d.academicPerformance ?? null,
-      d.preferredArrivalTime ?? null,
-      d.allocatedSlot ?? null,
-      d.expectedDurationMinutes ?? null,
-      d.regularDays ? JSON.stringify(d.regularDays) : null,
-      d.feeDueDay ?? null,
-      d.feeOverride !== undefined
-        ? d.feeOverride
-          ? JSON.stringify(d.feeOverride)
-          : null
-        : (existing.fee_override_json as string | null),
-      d.notes ?? null,
-      d.learningSpeed ?? null,
-      d.priority ?? null,
-      d.academicGoals ?? null,
-      now,
-      req.params.id,
-    );
+    db.exec('BEGIN');
+    try {
+      db.prepare(`
+        UPDATE students SET
+          full_name = COALESCE(?, full_name),
+          nickname = CASE WHEN ? THEN ? ELSE nickname END,
+          avatar_color = COALESCE(?, avatar_color),
+          class_level = COALESCE(?, class_level),
+          board = COALESCE(?, board),
+          school_name = COALESCE(?, school_name),
+          admission_date = COALESCE(?, admission_date),
+          date_of_birth = COALESCE(?, date_of_birth),
+          student_phone = COALESCE(?, student_phone),
+          parent_name = COALESCE(?, parent_name),
+          parent_phone = COALESCE(?, parent_phone),
+          emergency_contact = COALESCE(?, emergency_contact),
+          address = COALESCE(?, address),
+          subjects_json = COALESCE(?, subjects_json),
+          strengths_json = COALESCE(?, strengths_json),
+          weaknesses_json = COALESCE(?, weaknesses_json),
+          academic_performance = COALESCE(?, academic_performance),
+          preferred_arrival_time = COALESCE(?, preferred_arrival_time),
+          allocated_slot = COALESCE(?, allocated_slot),
+          expected_duration_minutes = COALESCE(?, expected_duration_minutes),
+          regular_days_json = COALESCE(?, regular_days_json),
+          fee_due_day = COALESCE(?, fee_due_day),
+          monthly_payment_day = COALESCE(?, monthly_payment_day),
+          fee_override_json = CASE WHEN ? THEN ? ELSE fee_override_json END,
+          notes = COALESCE(?, notes),
+          learning_speed = COALESCE(?, learning_speed),
+          priority = COALESCE(?, priority),
+          academic_goals = COALESCE(?, academic_goals),
+          updated_at = ?
+        WHERE id = ?
+      `).run(
+        d.fullName ?? null,
+        Number(d.nickname !== undefined),
+        d.nickname || null,
+        d.avatarColor ?? null,
+        d.classLevel ?? null,
+        d.board ?? null,
+        d.schoolName ?? null,
+        d.admissionDate ?? null,
+        d.dateOfBirth ?? null,
+        d.studentPhone ?? null,
+        d.parentName ?? null,
+        d.parentPhone ?? null,
+        d.emergencyContact ?? null,
+        d.address ?? null,
+        d.subjects ? JSON.stringify(d.subjects) : null,
+        d.strengths ? JSON.stringify(d.strengths) : null,
+        d.weaknesses ? JSON.stringify(d.weaknesses) : null,
+        d.academicPerformance ?? null,
+        d.preferredArrivalTime ?? null,
+        d.allocatedSlot ?? null,
+        d.expectedDurationMinutes ?? null,
+        d.regularDays ? JSON.stringify(d.regularDays) : null,
+        d.feeDueDay === undefined ? null : Math.min(d.feeDueDay, 28),
+        d.feeDueDay ?? null,
+        Number(d.feeOverride !== undefined),
+        d.feeOverride ? JSON.stringify(d.feeOverride) : null,
+        d.notes ?? null,
+        d.learningSpeed ?? null,
+        d.priority ?? null,
+        d.academicGoals ?? null,
+        now,
+        req.params.id,
+      );
+
+      if (d.feeDueDay !== undefined) {
+        const today = formatIstDate();
+        const invoices = db.prepare(`
+          SELECT id, month_key, total_amount_paise, paid_amount_paise FROM fee_invoices
+          WHERE student_id = ? AND month_key >= ? AND status IN ('unpaid', 'partial', 'overdue')
+        `).all(req.params.id, today.slice(0, 7));
+        const update = db.prepare('UPDATE fee_invoices SET due_date = ?, status = ?, updated_at = ? WHERE id = ? AND due_date <> ?');
+        for (const invoice of invoices) {
+          const due = buildDueDateForMonth(String(invoice.month_key), d.feeDueDay);
+          const status = computeInvoiceStatus(Number(invoice.total_amount_paise), Number(invoice.paid_amount_paise), due, today, false);
+          update.run(due, status, now, invoice.id, due);
+        }
+      }
+      db.exec('COMMIT');
+    } catch (error) {
+      db.exec('ROLLBACK');
+      throw error;
+    }
 
     logAudit('UPDATE_STUDENT', 'student', req.params.id, `Updated profile for ${d.fullName ?? existing.full_name}`);
     const snap = getWorkspaceSnapshot();
@@ -497,7 +486,10 @@ async function startServer() {
   };
 
   app.put('/api/students/:id', handleUpdateStudent);
-  app.post('/api/students/:id', handleUpdateStudent);
+  app.post('/api/students/:id', (req, res, next) => {
+    if (req.params.id === 'promote') return next();
+    return handleUpdateStudent(req, res);
+  });
 
   app.post('/api/students/:id/status', (req, res) => {
     const schema = z.object({

@@ -4,6 +4,7 @@ import {
   DEFAULT_FEE_CONFIG,
   allocatePaymentToInvoices,
   buildMonthlyInvoiceDraft,
+  buildNextDayFeeReminders,
   calculateStudentMonthlyFee,
   evaluateFeeReminders,
   getStandardClassBoardFeePaise,
@@ -62,6 +63,31 @@ const DEFAULT_REMINDERS: ReminderSettings = {
   browserNotificationsEnabled: false,
   feeMessageTemplate: 'Reminder for {{studentName}}: {{amount}} due on {{dueDate}}.',
 };
+
+test('next-day fee alerts cross month boundaries, respect invoices, and work before billing', () => {
+  const dueFirst = makeStudent({ feeDueDay: 1, nickname: 'Ro' });
+  const paid = makeStudent({ id: 'paid', feeDueDay: 1 });
+  const paused = makeStudent({ id: 'paused', feeDueDay: 1, status: 'paused' });
+  const paidDraft = buildMonthlyInvoiceDraft({
+    student: paid, monthKey: '2026-12', feeConfig: DEFAULT_FEE_CONFIG,
+    existingInvoices: [], discounts: [], todayDate: '2026-11-30',
+  })!;
+  const options = {
+    students: [dueFirst, paid, paused], discounts: [], feeConfig: DEFAULT_FEE_CONFIG,
+    invoices: [{ ...paidDraft, id: 'invoice', status: 'paid' as const, createdAt: '', updatedAt: '' }],
+  };
+  assert.equal(buildNextDayFeeReminders({ ...options, todayDate: '2026-11-29' }).length, 0);
+  const alerts = buildNextDayFeeReminders({ ...options, todayDate: '2026-11-30' });
+  assert.equal(alerts.length, 1);
+  assert.equal(alerts[0].studentId, dueFirst.id);
+  assert.match(alerts[0].title, /^Ro \(Rohan Kulkarni\)/);
+  assert.match(alerts[0].message, /2026-12-01/);
+
+  const monthEnd = buildNextDayFeeReminders({
+    ...options, students: [makeStudent({ feeDueDay: 31 })], invoices: [], todayDate: '2027-02-27',
+  });
+  assert.match(monthEnd[0].message, /2027-02-28/);
+});
 
 test('default class-wise SSC, CBSE, and ICSE fee matrix matches specification exactly', () => {
   assert.equal(getStandardClassBoardFeePaise(3, 'SSC').totalPaise, 50_000);

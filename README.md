@@ -54,7 +54,7 @@ database_id = "YOUR_ACTUAL_D1_DATABASE_ID"
 
 Apply the initial database migration:
 ```bash
-npx wrangler d1 execute tuitio-db --remote --file=./cloudflare/migrations/0001_initial.sql
+npx wrangler d1 migrations apply DB --remote --config wrangler.toml
 ```
 
 ---

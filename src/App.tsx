@@ -79,7 +79,7 @@ export default function App() {
     teacher: null,
   });
   const [workspace, setWorkspace] = useState<WorkspaceSnapshot | null>(null);
-  const [section, setSection] = useState<NavSection>('dashboard');
+  const [section, setSection] = useState<NavSection>(() => new URLSearchParams(window.location.search).get('view') === 'notifications' ? 'notifications' : 'dashboard');
   const [selectedStudentId, setSelectedStudentId] = useState<string | null>(null);
   const [feePaymentStudentId, setFeePaymentStudentId] = useState<string | null>(null);
   const [liveMode, setLiveMode] = useState(false);
@@ -216,6 +216,17 @@ export default function App() {
       customBlockOverrides: blockOverrides,
     });
   }, [workspace, blockOverrides]);
+
+  useEffect(() => {
+    if (!('serviceWorker' in navigator)) return;
+    const openAlerts = (event: MessageEvent) => {
+      if (event.data?.type !== 'open-fee-alerts') return;
+      setSection('notifications');
+      if (auth.authenticated) void loadWorkspace();
+    };
+    navigator.serviceWorker.addEventListener('message', openAlerts);
+    return () => navigator.serviceWorker.removeEventListener('message', openAlerts);
+  }, [auth.authenticated, loadWorkspace]);
 
   const unreadAlerts = useMemo(
     () => workspace?.notifications.filter((n) => !n.read).length ?? 0,
@@ -489,7 +500,7 @@ export default function App() {
               selectedStudentId={selectedStudentId}
               onSelectStudent={setSelectedStudentId}
               onCreateStudent={async (payload) => {
-                const res = await apiRequest<any>('/api/students', {
+                const res = await apiRequest<{ id: string; snapshot: WorkspaceSnapshot }>('/api/students', {
                   method: 'POST',
                   body: payload,
                 });

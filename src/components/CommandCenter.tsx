@@ -1,3 +1,4 @@
+import { StudentName } from './StudentName';
 import React, { useEffect, useMemo, useState } from 'react';
 import {
   AlertTriangle,
@@ -212,7 +213,7 @@ export const CommandCenter: React.FC<CommandCenterProps> = ({
                       }}
                       className="text-base font-bold text-slate-950 dark:text-white hover:underline text-left"
                     >
-                      {sp.studentName}
+                      <StudentName student={workspace.students.find((student) => student.id === sp.studentId)} />
                     </button>
                     <p className="text-xs text-slate-500 dark:text-neutral-400 mt-0.5">
                       Class {sp.classLevel} · {sp.board} · {sp.recommendedTeacherMinutes}m teacher / {sp.independentMinutes}m solo

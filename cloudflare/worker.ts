@@ -1,4 +1,6 @@
 // Cloudflare Worker Entrypoint — Complete Edge Runtime with D1 + Static Assets + Cron Triggers
+import { getPushKeys, pushEndpointSchema, pushSubscriptionSchema, sendFeePush } from './webPush';
+import { studentCreateSchema, studentPatchSchema } from '../server/studentPayload';
 import type {
   AttendanceRecord,
   AuditLogEntry,
@@ -19,11 +21,11 @@ import type {
 import {
   allocatePaymentToInvoices,
   buildMonthlyInvoiceDraft,
+  buildNextDayFeeReminders,
   computeInvoiceStatus,
-  evaluateFeeReminders,
 } from '../src/engines/feeEngine';
 import { buildCarryForwardHomeworkDrafts } from '../src/engines/schedulerEngine';
-import { addDaysToDateStr, formatIstDate, formatIstMonthKey, formatRupeesFromPaise } from '../src/engines/istDate';
+import { addDaysToDateStr, buildDueDateForMonth, formatIstDate, formatIstMonthKey, formatRupeesFromPaise } from '../src/engines/istDate';
 import { buildDemoDataset, createDefaultSettings, createDefaultTemplates } from '../server/demoSeed';
 
 export interface Env {
@@ -33,14 +35,16 @@ export interface Env {
   TEACHER_ADMIN_PASSCODE?: string;
 }
 
-interface D1Database {
-  prepare(query: string): {
-    bind(...values: unknown[]): {
-      first<T = Record<string, unknown>>(): Promise<T | null>;
-      all<T = Record<string, unknown>>(): Promise<{ results: T[] }>;
-      run(): Promise<{ success: boolean; meta?: unknown }>;
-    };
-  };
+export interface D1Statement {
+  bind(...values: unknown[]): D1Statement;
+  first<T = Record<string, unknown>>(): Promise<T | null>;
+  all<T = Record<string, unknown>>(): Promise<{ results: T[] }>;
+  run(): Promise<{ success: boolean; meta?: { changes?: number } }>;
+}
+
+export interface D1Database {
+  prepare(query: string): D1Statement;
+  batch(statements: D1Statement[]): Promise<unknown[]>;
 }
 
 interface Fetcher {
@@ -205,7 +209,7 @@ async function getSettings(db: D1Database): Promise<TuitionSettings> {
       ...defaults,
       ...parsed,
       feeConfig: { ...defaults.feeConfig, ...(parsed.feeConfig || {}) },
-      reminders: { ...defaults.reminders, ...(parsed.reminders || {}) },
+      reminders: { ...defaults.reminders, ...parsed.reminders, feeDaysBefore: 1 },
     };
   } catch {
     return createDefaultSettings();
@@ -245,12 +249,7 @@ async function ensureBootstrapDefaults(db: D1Database): Promise<void> {
   }
 }
 
-async function getWorkspaceSnapshot(db: D1Database): Promise<WorkspaceSnapshot> {
-  const nowTick = new Date();
-  const todayIst = formatIstDate(nowTick);
-  const currentMonthIst = formatIstMonthKey(nowTick);
-  const settings = await getSettings(db);
-
+async function getBillingData(db: D1Database, invoiceMonth?: string) {
   const studentRows = (await db.prepare('SELECT * FROM students ORDER BY class_level ASC, full_name ASC').bind().all<Record<string, unknown>>()).results;
   const students: Student[] = studentRows.map((r) => ({
     id: String(r.id),
@@ -276,7 +275,7 @@ async function getWorkspaceSnapshot(db: D1Database): Promise<WorkspaceSnapshot> 
     allocatedSlot: String(r.allocated_slot || '18:00–20:00'),
     expectedDurationMinutes: Number(r.expected_duration_minutes ?? 120),
     regularDays: JSON.parse(String(r.regular_days_json || '[1,2,3,4,5,6]')),
-    feeDueDay: Number(r.fee_due_day ?? 5),
+    feeDueDay: Number(r.monthly_payment_day ?? r.fee_due_day ?? 5),
     feeOverride: r.fee_override_json ? JSON.parse(String(r.fee_override_json)) : null,
     creditBalancePaise: Number(r.credit_balance_paise ?? 0),
     notes: String(r.notes ?? ''),
@@ -306,6 +305,60 @@ async function getWorkspaceSnapshot(db: D1Database): Promise<WorkspaceSnapshot> 
     createdAt: String(r.created_at),
   }));
 
+  const invoiceQuery = invoiceMonth
+    ? db.prepare('SELECT * FROM fee_invoices WHERE month_key = ?').bind(invoiceMonth)
+    : db.prepare('SELECT * FROM fee_invoices ORDER BY month_key DESC, due_date ASC');
+  const invRows = (await invoiceQuery.all<Record<string, unknown>>()).results;
+  const invoices: FeeInvoice[] = invRows.map((r) => ({
+    id: String(r.id),
+    studentId: String(r.student_id),
+    monthKey: String(r.month_key),
+    classLevelSnapshot: Number(r.class_level_snapshot) as FeeInvoice['classLevelSnapshot'],
+    boardSnapshot: String(r.board_snapshot) as FeeInvoice['boardSnapshot'],
+    baseAmountPaise: Number(r.base_amount_paise),
+    boardSurchargePaise: Number(r.board_surcharge_paise),
+    overrideApplied: Number(r.override_applied) === 1,
+    discountPaise: Number(r.discount_paise),
+    discountSummary: String(r.discount_summary ?? ''),
+    totalAmountPaise: Number(r.total_amount_paise),
+    paidAmountPaise: Number(r.paid_amount_paise),
+    dueDate: String(r.due_date),
+    status: String(r.status) as FeeInvoice['status'],
+    notes: String(r.notes ?? ''),
+    isDemo: Number(r.is_demo) === 1,
+    createdAt: String(r.created_at),
+    updatedAt: String(r.updated_at),
+  }));
+
+  return { students, discounts, invoices };
+}
+
+async function reconcileFeeAlerts(
+  db: D1Database,
+  billing: Awaited<ReturnType<typeof getBillingData>>,
+  settings: TuitionSettings,
+  today: string,
+): Promise<number> {
+  const reminders = buildNextDayFeeReminders({ ...billing, feeConfig: settings.feeConfig, todayDate: today });
+  if (reminders.length > 0) {
+    const now = new Date().toISOString();
+    const statements = reminders.map((reminder) => db.prepare(`
+      INSERT OR IGNORE INTO notifications (
+        id, category, title, message, student_id, priority, dedup_key, scheduled_for, created_at
+      ) VALUES (?, 'fee_due', ?, ?, ?, 'high', ?, ?, ?)
+    `).bind(generateId('ntf'), reminder.title, reminder.message, reminder.studentId, reminder.dedupKey, today, now));
+    await db.batch(statements);
+  }
+  return reminders.length;
+}
+
+async function getWorkspaceSnapshot(db: D1Database): Promise<WorkspaceSnapshot> {
+  const nowTick = new Date();
+  const todayIst = formatIstDate(nowTick);
+  const currentMonthIst = formatIstMonthKey(nowTick);
+  const settings = await getSettings(db);
+
+  const { students, discounts, invoices } = await getBillingData(db);
   const attRows = (await db.prepare('SELECT * FROM attendance ORDER BY date DESC, updated_at DESC LIMIT 500').bind().all<Record<string, unknown>>()).results;
   const attendance: AttendanceRecord[] = attRows.map((r) => ({
     id: String(r.id),
@@ -376,28 +429,6 @@ async function getWorkspaceSnapshot(db: D1Database): Promise<WorkspaceSnapshot> 
     updatedAt: String(r.updated_at),
   }));
 
-  const invRows = (await db.prepare('SELECT * FROM fee_invoices ORDER BY month_key DESC, due_date ASC').bind().all<Record<string, unknown>>()).results;
-  const invoices: FeeInvoice[] = invRows.map((r) => ({
-    id: String(r.id),
-    studentId: String(r.student_id),
-    monthKey: String(r.month_key),
-    classLevelSnapshot: Number(r.class_level_snapshot) as FeeInvoice['classLevelSnapshot'],
-    boardSnapshot: String(r.board_snapshot) as FeeInvoice['boardSnapshot'],
-    baseAmountPaise: Number(r.base_amount_paise),
-    boardSurchargePaise: Number(r.board_surcharge_paise),
-    overrideApplied: Number(r.override_applied) === 1,
-    discountPaise: Number(r.discount_paise),
-    discountSummary: String(r.discount_summary ?? ''),
-    totalAmountPaise: Number(r.total_amount_paise),
-    paidAmountPaise: Number(r.paid_amount_paise),
-    dueDate: String(r.due_date),
-    status: String(r.status) as FeeInvoice['status'],
-    notes: String(r.notes ?? ''),
-    isDemo: Number(r.is_demo) === 1,
-    createdAt: String(r.created_at),
-    updatedAt: String(r.updated_at),
-  }));
-
   const payRows = (await db.prepare('SELECT * FROM fee_payments ORDER BY payment_date DESC, created_at DESC').bind().all<Record<string, unknown>>()).results;
   const payments: FeePayment[] = payRows.map((r) => ({
     id: String(r.id),
@@ -432,6 +463,7 @@ async function getWorkspaceSnapshot(db: D1Database): Promise<WorkspaceSnapshot> 
     updatedAt: String(r.updated_at),
   }));
 
+  await reconcileFeeAlerts(db, { students, discounts, invoices }, settings, todayIst);
   const notifRows = (await db.prepare('SELECT * FROM notifications ORDER BY created_at DESC LIMIT 80').bind().all<Record<string, unknown>>()).results;
   const notifications: NotificationItem[] = notifRows.map((r) => ({
     id: String(r.id),
@@ -545,30 +577,30 @@ async function seedDemoWorkspace(db: D1Database): Promise<void> {
   for (const a of data.attendance) {
     await db
       .prepare(`
-        INSERT OR IGNORE INTO attendance (id, student_id, date, status, actual_arrival_time, departure_time, note, is_demo, created_at, updated_at)
-        VALUES (?, ?, ?, ?, ?, ?, ?, 1, ?, ?)
+        INSERT OR IGNORE INTO attendance (id, student_id, date, status, actual_arrival_time, departure_time, note, is_demo, updated_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, 1, ?)
       `)
-      .bind(a.id, a.studentId, a.date, a.status, a.actualArrivalTime ?? null, a.departureTime ?? null, a.note, a.updatedAt, a.updatedAt)
+      .bind(a.id, a.studentId, a.date, a.status, a.actualArrivalTime ?? null, a.departureTime ?? null, a.note ?? '', a.updatedAt)
       .run();
   }
 
   for (const h of data.homework) {
     await db
       .prepare(`
-        INSERT OR IGNORE INTO homework (id, student_id, subject, chapter, topic, title, instructions, assigned_date, due_date, estimated_minutes, priority, source, completion_pct, status, completed_date, teacher_verified, needs_help, remarks, carried_from_id, is_demo, created_at, updated_at)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?)
+        INSERT OR IGNORE INTO homework (id, student_id, subject, chapter, topic, title, instructions, assigned_date, due_date, estimated_minutes, priority, source, completion_pct, status, completed_date, teacher_verified, needs_help, remarks, carried_from_id, is_demo, updated_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?)
       `)
-      .bind(h.id, h.studentId, h.subject, h.chapter, h.topic, h.title, h.instructions, h.assignedDate, h.dueDate, h.estimatedMinutes, h.priority, h.source, h.completionPct, h.status, h.completedDate ?? null, h.teacherVerified ? 1 : 0, h.needsHelp ? 1 : 0, h.remarks, h.carriedFromId ?? null, h.updatedAt, h.updatedAt)
+      .bind(h.id, h.studentId, h.subject, h.chapter, h.topic, h.title, h.instructions, h.assignedDate, h.dueDate, h.estimatedMinutes, h.priority, h.source, h.completionPct, h.status, h.completedDate ?? null, h.teacherVerified ? 1 : 0, h.needsHelp ? 1 : 0, h.remarks, h.carriedFromId ?? null, h.updatedAt)
       .run();
   }
 
   for (const e of data.exams) {
     await db
       .prepare(`
-        INSERT OR IGNORE INTO exams (id, student_id, subject, exam_name, exam_type, exam_date, syllabus, max_marks, obtained_marks, important_chapters_json, preparation_status, revision_plan, weak_areas_json, is_demo, created_at, updated_at)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?)
+        INSERT OR IGNORE INTO exams (id, student_id, subject, exam_name, exam_type, exam_date, syllabus, max_marks, obtained_marks, important_chapters_json, preparation_status, revision_plan, weak_areas_json, is_demo, updated_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?)
       `)
-      .bind(e.id, e.studentId, e.subject, e.examName, e.examType, e.examDate, e.syllabus, e.maxMarks, e.obtainedMarks ?? null, JSON.stringify(e.importantChapters), e.preparationStatus, e.revisionPlan, JSON.stringify(e.weakAreas), e.updatedAt, e.updatedAt)
+      .bind(e.id, e.studentId, e.subject, e.examName, e.examType, e.examDate, e.syllabus, e.maxMarks, e.obtainedMarks ?? null, JSON.stringify(e.importantChapters), e.preparationStatus, e.revisionPlan, JSON.stringify(e.weakAreas), e.updatedAt)
       .run();
   }
 
@@ -578,7 +610,7 @@ async function seedDemoWorkspace(db: D1Database): Promise<void> {
         INSERT OR IGNORE INTO fee_invoices (id, student_id, month_key, class_level_snapshot, board_snapshot, base_amount_paise, board_surcharge_paise, override_applied, discount_paise, discount_summary, total_amount_paise, paid_amount_paise, due_date, status, notes, is_demo, created_at, updated_at)
         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?)
       `)
-      .bind(inv.id, inv.studentId, inv.monthKey, inv.classLevelSnapshot, inv.boardSnapshot, inv.baseAmountPaise, inv.boardSurchargePaise, inv.overrideApplied ? 1 : 0, inv.discountPaise, inv.discountSummary, inv.totalAmountPaise, inv.paidAmountPaise, inv.dueDate, inv.status, inv.notes, inv.createdAt, inv.updatedAt)
+      .bind(inv.id, inv.studentId, inv.monthKey, inv.classLevelSnapshot, inv.boardSnapshot, inv.baseAmountPaise, inv.boardSurchargePaise, inv.overrideApplied ? 1 : 0, inv.discountPaise, inv.discountSummary, inv.totalAmountPaise, inv.paidAmountPaise, inv.dueDate, inv.status, inv.notes ?? '', inv.createdAt, inv.updatedAt)
       .run();
   }
 
@@ -605,8 +637,7 @@ async function clearDemoWorkspace(db: D1Database): Promise<void> {
 }
 
 // Router
-export default {
-  async fetch(request: Request, env: Env): Promise<Response> {
+async function handleRequest(request: Request, env: Env): Promise<Response> {
     const url = new URL(request.url);
     const method = request.method.toUpperCase();
 
@@ -633,13 +664,11 @@ export default {
       }
     }
 
-    // Ensure initial app settings and templates exist
-    await ensureBootstrapDefaults(env.DB);
-
     // Only process /api/ routes in Worker logic; serve static assets for everything else
     if (!url.pathname.startsWith('/api/')) {
       return env.ASSETS.fetch(request);
     }
+    await ensureBootstrapDefaults(env.DB);
 
     // 1. Auth Status
     if (url.pathname === '/api/auth/status' && method === 'GET') {
@@ -696,10 +725,16 @@ export default {
 
     // 3. Auth Demo Bootstrap
     if (url.pathname === '/api/auth/demo-bootstrap' && method === 'POST') {
-      let teacherRow = await env.DB.prepare('SELECT id, email, name FROM teachers LIMIT 1').bind().first<{ id: string; email: string; name: string }>();
+      const teachers = (await env.DB.prepare('SELECT id, email, name FROM teachers LIMIT 2')
+        .all<{ id: string; email: string; name: string }>()).results;
+      const realStudent = await env.DB.prepare('SELECT id FROM students WHERE is_demo = 0 LIMIT 1').first();
+      if (realStudent || teachers.some((teacher) => teacher.id !== 'demo-teacher')) {
+        return errorResponse('Workspace is already claimed. Please sign in.', 403);
+      }
+      let teacherRow = teachers[0];
       if (!teacherRow) {
         const now = new Date().toISOString();
-        const { hash, salt } = await hashPassword('demo123456');
+        const { hash, salt } = await hashPassword(crypto.randomUUID());
         await env.DB
           .prepare('INSERT INTO teachers (id, email, name, password_hash, password_salt, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)')
           .bind('demo-teacher', 'meera@tuitio.app', 'Meera Deshmukh', hash, salt, now, now)
@@ -776,126 +811,124 @@ export default {
 
     // 8. Students
     if (url.pathname === '/api/students' && method === 'POST') {
-      const body = (await request.json().catch(() => ({}))) as Record<string, unknown>;
+      const parsed = studentCreateSchema.safeParse(await request.json().catch(() => null));
+      if (!parsed.success) return errorResponse(parsed.error.issues[0].message);
+      const student = parsed.data;
       const id = generateId('stu');
       const now = new Date().toISOString();
-      const codeCount = await env.DB.prepare('SELECT COUNT(*) as c FROM students').bind().first<{ c: number }>();
-      const studentCode = `STU-${String((codeCount?.c ?? 0) + 101).padStart(3, '0')}`;
+      const settings = await getSettings(env.DB);
+      const dueDay = student.feeDueDay ?? settings.feeConfig.defaultDueDay;
 
-      await env.DB
-        .prepare(`
-          INSERT INTO students (
-            id, student_code, full_name, nickname, avatar_color, class_level, board, school_name,
-            admission_date, date_of_birth, student_phone, parent_name, parent_phone,
-            emergency_contact, address, subjects_json, strengths_json, weaknesses_json,
-            academic_performance, preferred_arrival_time, allocated_slot, expected_duration_minutes,
-            regular_days_json, fee_due_day, fee_override_json, credit_balance_paise, notes,
-            learning_speed, priority, academic_goals, status, is_demo, created_at, updated_at
-          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?, ?, 'active', 0, ?, ?)
-        `)
-        .bind(
-          id,
-          studentCode,
-          String(body.fullName || '').trim(),
-          body.nickname ? String(body.nickname).trim() : null,
-          String(body.avatarColor || '#0284C7'),
-          Number(body.classLevel || 5),
-          String(body.board || 'SSC'),
-          String(body.schoolName || ''),
-          String(body.admissionDate || formatIstDate(new Date())),
-          body.dateOfBirth ? String(body.dateOfBirth) : null,
-          body.studentPhone ? String(body.studentPhone) : null,
-          String(body.parentName || ''),
-          String(body.parentPhone || ''),
-          body.emergencyContact ? String(body.emergencyContact) : null,
-          body.address ? String(body.address) : null,
-          JSON.stringify(body.subjects || ['All Subjects']),
-          JSON.stringify(body.strengths || []),
-          JSON.stringify(body.weaknesses || []),
-          Number(body.academicPerformance || 75),
-          String(body.preferredArrivalTime || '18:00'),
-          String(body.allocatedSlot || '18:00–20:00'),
-          Number(body.expectedDurationMinutes || 120),
-          JSON.stringify(body.regularDays || [1, 2, 3, 4, 5, 6]),
-          Number(body.feeDueDay || 5),
-          body.feeOverride ? JSON.stringify(body.feeOverride) : null,
-          String(body.notes || ''),
-          String(body.learningSpeed || 'steady'),
-          String(body.priority || 'normal'),
-          String(body.academicGoals || ''),
-          now,
-          now,
+      await env.DB.prepare(`
+        INSERT INTO students (
+          id, student_code, full_name, nickname, avatar_color, class_level, board, school_name,
+          admission_date, date_of_birth, student_phone, parent_name, parent_phone,
+          emergency_contact, address, subjects_json, strengths_json, weaknesses_json,
+          academic_performance, preferred_arrival_time, allocated_slot, expected_duration_minutes,
+          regular_days_json, fee_due_day, monthly_payment_day, fee_override_json, notes,
+          learning_speed, priority, academic_goals, created_at, updated_at
         )
-        .run();
+        SELECT ?, printf('STU-%03d', COALESCE(MAX(CAST(substr(student_code, 5) AS INTEGER)), 100) + 1),
+          ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
+        FROM students WHERE student_code GLOB 'STU-[0-9]*' AND substr(student_code, 5) NOT GLOB '*[^0-9]*'
+      `).bind(
+        id, student.fullName, student.nickname || null, student.avatarColor ?? '#0284C7',
+        student.classLevel, student.board, student.schoolName,
+        student.admissionDate ?? formatIstDate(), student.dateOfBirth ?? null,
+        student.studentPhone ?? null, student.parentName, student.parentPhone,
+        student.emergencyContact ?? null, student.address ?? null, JSON.stringify(student.subjects),
+        JSON.stringify(student.strengths), JSON.stringify(student.weaknesses), student.academicPerformance,
+        student.preferredArrivalTime, student.allocatedSlot, student.expectedDurationMinutes,
+        JSON.stringify(student.regularDays), Math.min(dueDay, 28), dueDay,
+        student.feeOverride ? JSON.stringify(student.feeOverride) : null, student.notes,
+        student.learningSpeed, student.priority, student.academicGoals, now, now,
+      ).run();
 
-      await logAudit(env.DB, 'CREATE_STUDENT', 'student', id, `Enrolled student ${body.fullName} (Class ${body.classLevel} ${body.board})`);
-      const snap = await getWorkspaceSnapshot(env.DB);
-      return jsonResponse({ id, snapshot: snap, ...snap }, 201);
+      await logAudit(env.DB, 'CREATE_STUDENT', 'student', id, `Enrolled student ${student.fullName} (Class ${student.classLevel} ${student.board})`);
+      return jsonResponse({ id, snapshot: await getWorkspaceSnapshot(env.DB) }, 201);
     }
 
     const studentIdMatch = url.pathname.match(/^\/api\/students\/([^/]+)\/?$/);
-    if (studentIdMatch && (method === 'PUT' || method === 'POST')) {
+    if (studentIdMatch && studentIdMatch[1] !== 'promote' && (method === 'PUT' || method === 'POST')) {
       const id = studentIdMatch[1];
-      const body = (await request.json().catch(() => ({}))) as Record<string, unknown>;
-      const existing = await env.DB.prepare('SELECT * FROM students WHERE id = ?').bind(id).first<Record<string, unknown>>();
+      const parsed = studentPatchSchema.safeParse(await request.json().catch(() => null));
+      if (!parsed.success) return errorResponse(parsed.error.issues[0].message);
+      const student = parsed.data;
+      const existing = await env.DB.prepare('SELECT full_name FROM students WHERE id = ?').bind(id).first<{ full_name: string }>();
       if (!existing) return errorResponse('Student not found.', 404);
 
       const now = new Date().toISOString();
-      await env.DB
-        .prepare(`
-          UPDATE students SET
-            full_name = COALESCE(?, full_name),
-            nickname = ?,
-            class_level = COALESCE(?, class_level),
-            board = COALESCE(?, board),
-            school_name = COALESCE(?, school_name),
-            admission_date = COALESCE(?, admission_date),
-            parent_name = COALESCE(?, parent_name),
-            parent_phone = COALESCE(?, parent_phone),
-            preferred_arrival_time = COALESCE(?, preferred_arrival_time),
-            allocated_slot = COALESCE(?, allocated_slot),
-            expected_duration_minutes = COALESCE(?, expected_duration_minutes),
-            fee_due_day = COALESCE(?, fee_due_day),
-            fee_override_json = ?,
-            subjects_json = COALESCE(?, subjects_json),
-            strengths_json = COALESCE(?, strengths_json),
-            weaknesses_json = COALESCE(?, weaknesses_json),
-            academic_goals = COALESCE(?, academic_goals),
-            notes = COALESCE(?, notes),
-            learning_speed = COALESCE(?, learning_speed),
-            priority = COALESCE(?, priority),
-            updated_at = ?
-          WHERE id = ?
-        `)
-        .bind(
-          body.fullName !== undefined ? String(body.fullName).trim() : null,
-          body.nickname !== undefined ? (body.nickname ? String(body.nickname).trim() : null) : (existing.nickname ?? null),
-          body.classLevel !== undefined ? Number(body.classLevel) : null,
-          body.board !== undefined ? String(body.board) : null,
-          body.schoolName !== undefined ? String(body.schoolName) : null,
-          body.admissionDate !== undefined ? String(body.admissionDate) : null,
-          body.parentName !== undefined ? String(body.parentName) : null,
-          body.parentPhone !== undefined ? String(body.parentPhone) : null,
-          body.preferredArrivalTime !== undefined ? String(body.preferredArrivalTime) : null,
-          body.allocatedSlot !== undefined ? String(body.allocatedSlot) : null,
-          body.expectedDurationMinutes !== undefined ? Number(body.expectedDurationMinutes) : null,
-          body.feeDueDay !== undefined ? Number(body.feeDueDay) : null,
-          body.feeOverride !== undefined ? (body.feeOverride ? JSON.stringify(body.feeOverride) : null) : (existing.fee_override_json ?? null),
-          body.subjects !== undefined ? JSON.stringify(body.subjects) : null,
-          body.strengths !== undefined ? JSON.stringify(body.strengths) : null,
-          body.weaknesses !== undefined ? JSON.stringify(body.weaknesses) : null,
-          body.academicGoals !== undefined ? String(body.academicGoals) : null,
-          body.notes !== undefined ? String(body.notes) : null,
-          body.learningSpeed !== undefined ? String(body.learningSpeed) : null,
-          body.priority !== undefined ? String(body.priority) : null,
-          now,
-          id,
-        )
-        .run();
+      const statements = [env.DB.prepare(`
+        UPDATE students SET
+          full_name = COALESCE(?, full_name),
+          nickname = CASE WHEN ? THEN ? ELSE nickname END,
+          avatar_color = COALESCE(?, avatar_color),
+          class_level = COALESCE(?, class_level),
+          board = COALESCE(?, board),
+          school_name = COALESCE(?, school_name),
+          admission_date = COALESCE(?, admission_date),
+          date_of_birth = COALESCE(?, date_of_birth),
+          student_phone = COALESCE(?, student_phone),
+          parent_name = COALESCE(?, parent_name),
+          parent_phone = COALESCE(?, parent_phone),
+          emergency_contact = COALESCE(?, emergency_contact),
+          address = COALESCE(?, address),
+          subjects_json = COALESCE(?, subjects_json),
+          strengths_json = COALESCE(?, strengths_json),
+          weaknesses_json = COALESCE(?, weaknesses_json),
+          academic_performance = COALESCE(?, academic_performance),
+          preferred_arrival_time = COALESCE(?, preferred_arrival_time),
+          allocated_slot = COALESCE(?, allocated_slot),
+          expected_duration_minutes = COALESCE(?, expected_duration_minutes),
+          regular_days_json = COALESCE(?, regular_days_json),
+          fee_due_day = COALESCE(?, fee_due_day),
+          monthly_payment_day = COALESCE(?, monthly_payment_day),
+          fee_override_json = CASE WHEN ? THEN ? ELSE fee_override_json END,
+          notes = COALESCE(?, notes),
+          learning_speed = COALESCE(?, learning_speed),
+          priority = COALESCE(?, priority),
+          academic_goals = COALESCE(?, academic_goals),
+          updated_at = ?
+        WHERE id = ?
+      `).bind(
+        student.fullName ?? null, Number(student.nickname !== undefined), student.nickname || null,
+        student.avatarColor ?? null, student.classLevel ?? null, student.board ?? null, student.schoolName ?? null,
+        student.admissionDate ?? null, student.dateOfBirth ?? null, student.studentPhone ?? null,
+        student.parentName ?? null, student.parentPhone ?? null, student.emergencyContact ?? null, student.address ?? null,
+        student.subjects ? JSON.stringify(student.subjects) : null,
+        student.strengths ? JSON.stringify(student.strengths) : null,
+        student.weaknesses ? JSON.stringify(student.weaknesses) : null, student.academicPerformance ?? null,
+        student.preferredArrivalTime ?? null, student.allocatedSlot ?? null, student.expectedDurationMinutes ?? null,
+        student.regularDays ? JSON.stringify(student.regularDays) : null,
+        student.feeDueDay === undefined ? null : Math.min(student.feeDueDay, 28), student.feeDueDay ?? null,
+        Number(student.feeOverride !== undefined), student.feeOverride ? JSON.stringify(student.feeOverride) : null,
+        student.notes ?? null, student.learningSpeed ?? null, student.priority ?? null, student.academicGoals ?? null,
+        now, id,
+      )];
+      if (student.feeDueDay !== undefined) {
+        const today = formatIstDate();
+        const invoices = (await env.DB.prepare(`
+          SELECT id, month_key FROM fee_invoices
+          WHERE student_id = ? AND month_key >= ? AND status IN ('unpaid', 'partial', 'overdue')
+        `).bind(id, today.slice(0, 7)).all<{ id: string; month_key: string }>()).results;
+        for (const invoice of invoices) {
+          const due = buildDueDateForMonth(invoice.month_key, student.feeDueDay);
+          statements.push(env.DB.prepare(`
+            UPDATE fee_invoices
+            SET due_date = ?, status = CASE
+              WHEN total_amount_paise <= paid_amount_paise THEN 'paid'
+              WHEN ? < ? THEN 'overdue'
+              WHEN paid_amount_paise > 0 THEN 'partial'
+              ELSE 'unpaid' END,
+              updated_at = ?
+            WHERE id = ? AND due_date <> ? AND status IN ('unpaid', 'partial', 'overdue')
+          `).bind(due, due, today, now, invoice.id, due));
+        }
+      }
+      await env.DB.batch(statements);
 
-      await logAudit(env.DB, 'UPDATE_STUDENT', 'student', id, `Updated student profile for ${body.fullName || existing.full_name}`);
-      const snap = await getWorkspaceSnapshot(env.DB);
-      return jsonResponse({ snapshot: snap, ...snap });
+      await logAudit(env.DB, 'UPDATE_STUDENT', 'student', id, `Updated student profile for ${student.fullName ?? existing.full_name}`);
+      return jsonResponse({ snapshot: await getWorkspaceSnapshot(env.DB) });
     }
 
     const studentStatusMatch = url.pathname.match(/^\/api\/students\/([^/]+)\/status$/);
@@ -964,8 +997,8 @@ export default {
           .run();
       } else {
         await env.DB
-          .prepare('INSERT INTO attendance (id, student_id, date, status, actual_arrival_time, departure_time, note, is_demo, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, 0, ?, ?)')
-          .bind(generateId('att'), studentId, date, status, actualArrivalTime ?? null, departureTime ?? null, note ?? '', now, now)
+          .prepare('INSERT INTO attendance (id, student_id, date, status, actual_arrival_time, departure_time, note, is_demo, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, 0, ?)')
+          .bind(generateId('att'), studentId, date, status, actualArrivalTime ?? null, departureTime ?? null, note ?? '', now)
           .run();
       }
       const snap = await getWorkspaceSnapshot(env.DB);
@@ -983,7 +1016,7 @@ export default {
         if (existing) {
           await env.DB.prepare('UPDATE attendance SET status = ?, actual_arrival_time = ?, note = ?, updated_at = ? WHERE id = ?').bind(e.status, e.actualArrivalTime ?? null, e.note ?? '', now, existing.id).run();
         } else {
-          await env.DB.prepare('INSERT INTO attendance (id, student_id, date, status, actual_arrival_time, note, is_demo, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, 0, ?, ?)').bind(generateId('att'), e.studentId, date, e.status, e.actualArrivalTime ?? null, e.note ?? '', now, now).run();
+          await env.DB.prepare('INSERT INTO attendance (id, student_id, date, status, actual_arrival_time, note, is_demo, updated_at) VALUES (?, ?, ?, ?, ?, ?, 0, ?)').bind(generateId('att'), e.studentId, date, e.status, e.actualArrivalTime ?? null, e.note ?? '', now).run();
         }
       }
       await logAudit(env.DB, 'BULK_ATTENDANCE', 'attendance', date, `Marked attendance for ${entries.length} students`);
@@ -1075,8 +1108,8 @@ export default {
       const snap = await getWorkspaceSnapshot(env.DB);
       const drafts = buildCarryForwardHomeworkDrafts({
         homework: snap.homework,
-        todayDate: snap.todayIst,
-        tomorrowDate: addDaysToDateStr(snap.todayIst, 1),
+        fromDate: snap.todayIst,
+        toDate: addDaysToDateStr(snap.todayIst, 1),
       });
       const now = new Date().toISOString();
 
@@ -1232,7 +1265,7 @@ export default {
             ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?)
           `)
           .bind(
-            draft.id,
+            generateId('inv'),
             draft.studentId,
             draft.monthKey,
             draft.classLevelSnapshot,
@@ -1412,6 +1445,31 @@ export default {
     }
 
     // Notifications
+    if (url.pathname === '/api/notifications/push') {
+      if (method === 'GET') {
+        const { publicKey } = await getPushKeys(env.DB);
+        return jsonResponse({ publicKey });
+      }
+      if (method === 'POST') {
+        const parsed = pushSubscriptionSchema.safeParse(await request.json().catch(() => null));
+        if (!parsed.success) return errorResponse('Unsupported or invalid push subscription.');
+        const { endpoint, keys } = parsed.data;
+        await env.DB.prepare(`
+          INSERT INTO web_push_subscriptions (endpoint, teacher_id, p256dh, auth)
+          VALUES (?, ?, ?, ?)
+          ON CONFLICT(endpoint) DO UPDATE SET teacher_id = excluded.teacher_id,
+            p256dh = excluded.p256dh, auth = excluded.auth
+        `).bind(endpoint, authedTeacher.id, keys.p256dh, keys.auth).run();
+        return jsonResponse({ enabled: true });
+      }
+      if (method === 'DELETE') {
+        const parsed = pushEndpointSchema.safeParse(await request.json().catch(() => null));
+        if (!parsed.success) return errorResponse('Invalid push subscription.');
+        await env.DB.prepare('DELETE FROM web_push_subscriptions WHERE endpoint = ? AND teacher_id = ?')
+          .bind(parsed.data.endpoint, authedTeacher.id).run();
+        return jsonResponse({ enabled: false });
+      }
+    }
     const notifReadMatch = url.pathname.match(/^\/api\/notifications\/([^/]+)\/read$/);
     if (notifReadMatch && method === 'POST') {
       const id = notifReadMatch[1];
@@ -1441,21 +1499,32 @@ export default {
 
     // Forward non-API requests to static assets
     return env.ASSETS.fetch(request);
+}
+
+export default {
+  async fetch(request: Request, env: Env): Promise<Response> {
+    try {
+      return await handleRequest(request, env);
+    } catch (error) {
+      console.error('Tuitio request failed', error);
+      return errorResponse('The server could not complete this request. Please try again.', 500);
+    }
   },
 
-  // Free-tier Cron Trigger Handler:
-  // 12:00 UTC (5:30 PM IST): Daily prep & fee reminder notification
-  // 14:30 UTC (8:00 PM IST): End-of-session summary
-  async scheduled(_controller: { cron: string; scheduledTime: number }, env: Env): Promise<void> {
-    const istDate = new Date(Date.now() + 330 * 60_000).toISOString().slice(0, 10);
-    const dedupKey = `cron-prep:${istDate}`;
-    const now = new Date().toISOString();
-    await env.DB
-      .prepare(
-        `INSERT OR IGNORE INTO notifications (id, category, title, message, student_id, priority, read, dedup_key, scheduled_for, created_at)
-         VALUES (?, 'daily_preparation', 'Evening Tuition Prep Ready', 'Open Tuitio to review today’s 6:00 PM–8:00 PM plan, expected students, and fee reminders.', NULL, 'normal', 0, ?, ?, ?)`,
-      )
-      .bind(`ntf-${istDate}`, dedupKey, `${istDate} 17:30`, now)
-      .run();
+  async scheduled(controller: { cron: string; scheduledTime: number }, env: Env): Promise<void> {
+    const today = formatIstDate(new Date(controller.scheduledTime));
+    if (today !== formatIstDate()) return;
+    if (controller.cron === '0 12 * * *') {
+      await env.DB.prepare(`
+        INSERT OR IGNORE INTO notifications (
+          id, category, title, message, priority, dedup_key, scheduled_for, created_at
+        ) VALUES (?, 'daily_preparation', 'Evening Tuition Prep Ready',
+          'Open Tuitio to review today’s plan, expected students, and fee reminders.', 'normal', ?, ?, ?)
+      `).bind(`ntf-${today}`, `cron-prep:${today}`, `${today} 17:30`, new Date().toISOString()).run();
+    }
+    const tomorrow = addDaysToDateStr(today, 1);
+    const [billing, settings] = await Promise.all([getBillingData(env.DB, tomorrow.slice(0, 7)), getSettings(env.DB)]);
+    const count = await reconcileFeeAlerts(env.DB, billing, settings, today);
+    await sendFeePush(env.DB, today, count);
   },
 };

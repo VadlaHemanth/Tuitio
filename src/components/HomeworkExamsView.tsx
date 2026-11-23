@@ -1,3 +1,4 @@
+import { StudentName } from './StudentName';
 import React, { useMemo, useState } from 'react';
 import {
   Check,
@@ -243,7 +244,7 @@ export const HomeworkView: React.FC<HomeworkViewProps> = ({
                 <div className="flex items-center justify-between">
                   <div>
                     <h2 className="text-base font-bold text-slate-950 dark:text-white">
-                      {stu?.fullName ?? 'Student'}
+                      <StudentName student={stu} />
                     </h2>
                     <p className="text-xs text-slate-500 dark:text-neutral-400">
                       {stu ? `Class ${stu.classLevel} · ${stu.board}` : ''} · {items.length} task{items.length === 1 ? '' : 's'}
@@ -390,7 +391,7 @@ export const HomeworkView: React.FC<HomeworkViewProps> = ({
                           : 'bg-white/70 dark:bg-black border-sky-200 dark:border-white/15 text-slate-700 dark:text-neutral-300'
                       }`}
                     >
-                      {s.fullName} (C{s.classLevel})
+                      {s.nickname ? `${s.nickname} (${s.fullName})` : s.fullName} (C{s.classLevel})
                     </button>
                   );
                 })}
@@ -637,10 +638,10 @@ export const ExamsView: React.FC<ExamsViewProps> = ({
                               : `In ${ex.daysUntil} days · ${ex.examDate}`}
                       </p>
                       <h3 className="text-base font-bold text-slate-950 dark:text-white mt-0.5">
-                        {stu?.fullName ?? 'Student'} — {ex.subject}
+                        <StudentName student={stu} />
                       </h3>
                       <p className="text-xs text-slate-600 dark:text-neutral-400">
-                        {ex.examName} · Max {ex.maxMarks} marks{urgent ? ' · Auto-prioritized today' : ''}
+                        {ex.subject} · {ex.examName} · Max {ex.maxMarks} marks{urgent ? ' · Auto-prioritized today' : ''}
                       </p>
                     </div>
                     <button
@@ -749,7 +750,7 @@ export const ExamsView: React.FC<ExamsViewProps> = ({
                 const pct = ex.obtainedMarks != null ? Math.round((ex.obtainedMarks / ex.maxMarks) * 100) : 0;
                 return (
                   <tr key={ex.id}>
-                    <td className="py-3 pr-4 font-semibold text-slate-900 dark:text-white">{stu?.fullName ?? 'Student'}</td>
+                    <td className="py-3 pr-4 font-semibold text-slate-900 dark:text-white"><StudentName student={stu} /></td>
                     <td className="py-3 px-3 text-xs text-slate-700 dark:text-neutral-300">
                       {ex.subject} · {ex.examName}
                     </td>
@@ -786,7 +787,7 @@ export const ExamsView: React.FC<ExamsViewProps> = ({
                   className="w-full px-3 py-2 rounded-xl bg-white/80 dark:bg-black border border-sky-200 dark:border-white/20 text-sm text-slate-900 dark:text-white"
                 >
                   {workspace.students.filter((s) => s.status === 'active').map((s) => (
-                    <option key={s.id} value={s.id}>{s.fullName} (Class {s.classLevel})</option>
+                    <option key={s.id} value={s.id}>{s.nickname ? `${s.nickname} (${s.fullName})` : s.fullName} (Class {s.classLevel})</option>
                   ))}
                 </select>
               </div>

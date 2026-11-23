@@ -91,11 +91,12 @@ export async function apiRequest<T>(
       return apiRequest<T>(url, { ...options, method: 'POST' });
     }
 
-    const data = await res.json().catch(() => ({}));
+    const data = await res.json().catch(() => null);
     if (!res.ok) {
-      const msg = (data as { error?: string }).error || `Request failed (${res.status})`;
+      const msg = (data as { error?: string } | null)?.error || `Request failed (${res.status})`;
       throw new Error(msg);
     }
+    if (data === null) throw new Error('The server returned an invalid response. Please try again.');
     return data as T;
   } catch (err) {
     const isNetworkError = !navigator.onLine || err instanceof TypeError;
@@ -154,10 +155,4 @@ export function downloadCsv(filename: string, headers: string[], rows: (string |
   a.click();
   document.body.removeChild(a);
   URL.revokeObjectURL(url);
-}
-
-export function buildWhatsAppShareUrl(phone: string, message: string): string {
-  const digits = phone.replace(/[^\d]/g, '');
-  const indianDigits = digits.length === 10 ? `91${digits}` : digits;
-  return `https://wa.me/${indianDigits}?text=${encodeURIComponent(message)}`;
 }

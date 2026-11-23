@@ -9,7 +9,7 @@
 ## Step-by-Step Deployment
 1. Install Wrangler: `npm install -g wrangler` and authenticate: `wrangler login`.
 2. Create D1 database: `wrangler d1 create tuitio-db` and paste the returned `database_id` into `cloudflare/wrangler.toml`.
-3. Apply migrations: `wrangler d1 execute tuitio-db --remote --file=./cloudflare/migrations/0001_initial.sql`.
+3. Apply migrations: `wrangler d1 migrations apply DB --remote --config cloudflare/wrangler.toml`.
 4. Set session secret: `wrangler secret put SESSION_SECRET` (enter a 32+ char random string).
 5. Build the React + PWA frontend: `npm run build`.
 6. Deploy Worker + Static Assets: `wrangler deploy --config cloudflare/wrangler.toml`.

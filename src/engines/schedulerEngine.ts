@@ -168,7 +168,7 @@ export function generateDailyTuitionPlan(params: {
 
     studentPlans.push({
       studentId: s.id,
-      studentName: s.fullName,
+      studentName: s.nickname || s.fullName,
       classLevel: s.classLevel,
       board: s.board,
       attendanceStatus: attStatus,
@@ -414,7 +414,7 @@ export function generateDailyTuitionPlan(params: {
   for (const rem of feeReminders.slice(0, 2)) {
     nextBestActions.push({
       id: `nba-fee-${rem.studentId}`,
-      title: `Remind ${rem.parentName} about ${rem.studentName}’s fee`,
+      title: `Follow up on ${rem.studentName}’s fee`,
       detail: `${rem.reason} · Balance due`,
       studentId: rem.studentId,
       category: 'fee',

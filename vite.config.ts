@@ -19,7 +19,7 @@ export default defineConfig(() => {
           short_name: 'Tuitio',
           description: 'Personal tuition operating system for managing Class 3–10 SSC, CBSE, and ICSE students, attendance, fees, homework, exams, and 6:00 PM–8:00 PM daily plans.',
           theme_color: '#0284C7',
-          background_color: '#F0F9FF',
+          background_color: '#e7f2fc',
           display: 'standalone',
           start_url: '/',
           scope: '/',
@@ -80,8 +80,8 @@ export default defineConfig(() => {
         apply: 'build',
         closeBundle(error?: Error): void {
           if (error) return;
-          const distDir = path.resolve(__dirname, 'dist');
-          const srcAssets = path.resolve(__dirname, 'src/assets');
+          const distDir = path.resolve(import.meta.dirname, 'dist');
+          const srcAssets = path.resolve(import.meta.dirname, 'src/assets');
           const distAssets = path.resolve(distDir, 'src/assets');
           if (fs.existsSync(distDir) && fs.existsSync(srcAssets)) {
             fs.cpSync(srcAssets, distAssets, { recursive: true, force: true });
@@ -91,7 +91,7 @@ export default defineConfig(() => {
     ],
     resolve: {
       alias: {
-        '@': path.resolve(__dirname, '.'),
+        '@': import.meta.dirname,
       },
     },
     server: {

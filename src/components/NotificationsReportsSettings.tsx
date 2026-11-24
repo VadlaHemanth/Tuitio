@@ -112,7 +112,7 @@ export const NotificationsView: React.FC<{
           <button
             type="button"
             onClick={onMarkAllRead}
-            className="inline-flex items-center gap-1.5 px-3.5 py-2 rounded-xl text-xs font-semibold bg-sky-600 dark:bg-white text-white dark:text-black"
+            className="inline-flex items-center gap-1.5 px-3.5 py-2 rounded-xl text-xs font-semibold glass-primary text-white"
           >
             <CheckCheck className="w-3.5 h-3.5" />
             <span>Mark All Read</span>
@@ -130,7 +130,7 @@ export const NotificationsView: React.FC<{
           type="button"
           onClick={() => setFilter('all')}
           className={`px-3 py-1.5 rounded-lg text-xs font-semibold ${
-            filter === 'all' ? 'bg-sky-600 text-white dark:bg-white dark:text-black' : 'text-slate-600 dark:text-neutral-400'
+            filter === 'all' ? 'glass-primary text-white' : 'text-slate-600 dark:text-neutral-400'
           }`}
         >
           All ({workspace.notifications.length})
@@ -139,7 +139,7 @@ export const NotificationsView: React.FC<{
           type="button"
           onClick={() => setFilter('unread')}
           className={`px-3 py-1.5 rounded-lg text-xs font-semibold ${
-            filter === 'unread' ? 'bg-sky-600 text-white dark:bg-white dark:text-black' : 'text-slate-600 dark:text-neutral-400'
+            filter === 'unread' ? 'glass-primary text-white' : 'text-slate-600 dark:text-neutral-400'
           }`}
         >
           Unread ({workspace.notifications.filter((n) => !n.read).length})
@@ -293,7 +293,7 @@ export const ReportsView: React.FC<{ workspace: WorkspaceSnapshot }> = ({ worksp
           <button
             type="button"
             onClick={() => window.print()}
-            className="inline-flex items-center gap-1.5 px-3.5 py-2 rounded-xl text-xs font-semibold bg-sky-600 dark:bg-white text-white dark:text-black"
+            className="inline-flex items-center gap-1.5 px-3.5 py-2 rounded-xl text-xs font-semibold glass-primary text-white"
           >
             <Printer className="w-3.5 h-3.5" />
             <span>Print Report</span>
@@ -409,6 +409,7 @@ export const SettingsView: React.FC<{
   const [draft, setDraft] = useState<TuitionSettings>(() => structuredClone(workspace.settings));
   const [saving, setSaving] = useState(false);
   const [savedBanner, setSavedBanner] = useState<string | null>(null);
+  const [settingsError, setSettingsError] = useState('');
   const [showIOSGuide, setShowIOSGuide] = useState(false);
   const { isInstallable, isInstalled, isIOS, install } = usePWAInstall();
 
@@ -436,11 +437,15 @@ export const SettingsView: React.FC<{
 
   const handleSave = async (e: React.FormEvent) => {
     e.preventDefault();
+    if (saving) return;
+    setSettingsError('');
     setSaving(true);
     try {
       await onSaveSettings(draft);
       setSavedBanner('Settings saved and synchronized.');
       setTimeout(() => setSavedBanner(null), 3000);
+    } catch (error) {
+      setSettingsError(error instanceof Error ? error.message : 'Unable to save settings.');
     } finally {
       setSaving(false);
     }
@@ -449,13 +454,17 @@ export const SettingsView: React.FC<{
   const handleImportFile = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file) return;
+    e.target.value = '';
+    setSettingsError('');
+    setSavedBanner(null);
     try {
       const text = await file.text();
       const parsed = JSON.parse(text);
       await onRestoreBackup(parsed);
       setSavedBanner('Backup restored successfully.');
-    } catch {
-      setSavedBanner('Could not parse backup JSON file.');
+    } catch (error) {
+      setSettingsError(error instanceof SyntaxError ? 'Choose a valid JSON file.' :
+        error instanceof Error ? error.message : 'Unable to restore the backup.');
     }
   };
 
@@ -471,7 +480,7 @@ export const SettingsView: React.FC<{
         <button
           type="submit"
           disabled={saving}
-          className="inline-flex items-center gap-1.5 px-5 py-2.5 rounded-xl text-xs font-semibold bg-sky-600 hover:bg-sky-700 dark:bg-white dark:hover:bg-neutral-200 text-white dark:text-black self-start"
+          className="inline-flex items-center gap-1.5 px-5 py-2.5 rounded-xl text-xs font-semibold glass-primary text-white self-start"
         >
           <Save className="w-4 h-4" />
           <span>{saving ? 'Saving...' : 'Save All Settings'}</span>
@@ -484,6 +493,7 @@ export const SettingsView: React.FC<{
           <span>{savedBanner}</span>
         </div>
       )}
+      {settingsError && <p role="alert" className="text-sm text-rose-700 dark:text-rose-200">{settingsError}</p>}
 
       {/* 1. Tuition Profile & Timings */}
       <section className="liquid-glass rounded-3xl p-5 sm:p-6 space-y-4">
@@ -630,7 +640,7 @@ export const SettingsView: React.FC<{
                   }}
                   className={`py-2.5 px-2 rounded-xl text-xs font-semibold border transition-colors ${
                     theme === id
-                      ? 'bg-sky-600 text-white border-sky-600 dark:bg-white dark:text-black dark:border-white'
+                      ? 'glass-primary text-white border-sky-600 dark:border-white'
                       : 'bg-white/70 dark:bg-black border-sky-200 dark:border-white/15 text-slate-700 dark:text-neutral-300'
                   }`}
                 >
@@ -648,7 +658,7 @@ export const SettingsView: React.FC<{
               <button
                 type="button"
                 onClick={install}
-                className="inline-flex items-center gap-2 px-4 py-2.5 rounded-xl text-xs font-semibold bg-sky-600 dark:bg-white text-white dark:text-black"
+                className="inline-flex items-center gap-2 px-4 py-2.5 rounded-xl text-xs font-semibold glass-primary text-white"
               >
                 <Smartphone className="w-4 h-4" />
                 <span>Install Tuitio App</span>
@@ -718,7 +728,7 @@ export const SettingsView: React.FC<{
             className="inline-flex items-center gap-1.5 px-4 py-2.5 rounded-xl text-xs font-semibold border border-sky-200 dark:border-white/20 bg-white/80 dark:bg-neutral-950 text-slate-800 dark:text-white"
           >
             <Download className="w-4 h-4" />
-            <span>Download Full JSON Backup</span>
+            <span>Download workspace JSON</span>
           </a>
 
           <label className="inline-flex items-center gap-1.5 px-4 py-2.5 rounded-xl text-xs font-semibold border border-sky-200 dark:border-white/20 bg-white/80 dark:bg-neutral-950 text-slate-800 dark:text-white cursor-pointer">

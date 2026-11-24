@@ -1,16 +1,17 @@
 import { StudentName } from './StudentName';
-import React, { useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import {
   Check,
   Forward,
   GraduationCap,
   HelpCircle,
   Mic,
+  Pencil,
   Plus,
   Trash2,
   X,
 } from 'lucide-react';
-import type { ExamType, HomeworkSource, PriorityLevel, WorkspaceSnapshot } from '../types';
+import type { ExamItem, ExamType, HomeworkSource, PriorityLevel, WorkspaceSnapshot } from '../types';
 import { addDaysToDateStr, diffDaysBetweenDateStrs } from '../engines/istDate';
 
 // --- HOMEWORK VIEW ---
@@ -34,6 +35,9 @@ export const HomeworkView: React.FC<HomeworkViewProps> = ({
   const [filterStatus, setFilterStatus] = useState<'pending' | 'all' | 'completed'>('pending');
   const [showAddModal, setShowAddModal] = useState(false);
   const [carryNotice, setCarryNotice] = useState<string | null>(null);
+  const [carrying, setCarrying] = useState(false);
+  const [assignError, setAssignError] = useState('');
+  const [actionError, setActionError] = useState('');
 
   // Quick Add state
   const [targetStudents, setTargetStudents] = useState<string[]>([]);
@@ -119,7 +123,12 @@ export const HomeworkView: React.FC<HomeworkViewProps> = ({
   const handleAssignSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     const ids = targetStudents.length > 0 ? targetStudents : activeStudents.slice(0, 1).map((s) => s.id);
-    if (ids.length === 0 || !title.trim()) return;
+    if (saving) return;
+    if (ids.length === 0 || title.trim().length < 2) {
+      setAssignError('Choose a student and enter a homework title.');
+      return;
+    }
+    setAssignError('');
     setSaving(true);
     try {
       await onCreateHomework({
@@ -138,6 +147,8 @@ export const HomeworkView: React.FC<HomeworkViewProps> = ({
       setTitle('');
       setInstructions('');
       setShowAddModal(false);
+    } catch (error) {
+      setAssignError(error instanceof Error ? error.message : 'Unable to assign homework.');
     } finally {
       setSaving(false);
     }
@@ -155,32 +166,41 @@ export const HomeworkView: React.FC<HomeworkViewProps> = ({
         <div className="flex flex-wrap items-center gap-2">
           <button
             type="button"
+            disabled={carrying}
             onClick={async () => {
-              const count = await onCarryForward();
-              setCarryNotice(
-                count > 0
-                  ? `Carried ${count} unfinished task${count === 1 ? '' : 's'} forward to tomorrow without duplicates.`
-                  : 'All unfinished tasks due today are already carried forward.',
-              );
+              setCarrying(true);
+              setActionError('');
+              try {
+                const count = await onCarryForward();
+                setCarryNotice(count ? `Moved ${count} unfinished task${count === 1 ? '' : 's'} to tomorrow.` : 'No unfinished tasks to move.');
+              } catch (error) {
+                setActionError(error instanceof Error ? error.message : 'Unable to carry homework forward.');
+              } finally {
+                setCarrying(false);
+              }
             }}
             className="inline-flex items-center gap-1.5 px-3.5 py-2.5 rounded-xl text-xs font-semibold border border-sky-200 dark:border-white/20 bg-white/80 dark:bg-neutral-950 text-slate-800 dark:text-white whitespace-nowrap"
           >
             <Forward className="w-4 h-4" />
-            <span>Carry Forward Incomplete</span>
+            <span>{carrying ? 'Moving tasks…' : 'Carry Forward Incomplete'}</span>
           </button>
           <button
             type="button"
+            disabled={!activeStudents.length}
             onClick={() => {
+              setAssignError('');
               setTargetStudents(activeStudents[0] ? [activeStudents[0].id] : []);
               setShowAddModal(true);
             }}
-            className="inline-flex items-center gap-1.5 px-4 py-2.5 rounded-xl text-xs font-semibold bg-sky-600 hover:bg-sky-700 dark:bg-white dark:hover:bg-neutral-200 text-white dark:text-black whitespace-nowrap"
+            className="inline-flex items-center gap-1.5 px-4 py-2.5 rounded-xl text-xs font-semibold glass-primary text-white whitespace-nowrap"
           >
             <Plus className="w-4 h-4" />
             <span>Assign Homework</span>
           </button>
         </div>
       </div>
+
+      {actionError && <p role="alert" className="text-sm text-rose-700 dark:text-rose-200">{actionError}</p>}
 
       {carryNotice && (
         <div className="liquid-glass rounded-2xl px-4 py-3 flex items-center justify-between text-xs text-slate-800 dark:text-white">
@@ -201,7 +221,7 @@ export const HomeworkView: React.FC<HomeworkViewProps> = ({
               onClick={() => setFilterStatus(st)}
               className={`px-3 py-1.5 rounded-lg text-xs font-semibold capitalize ${
                 filterStatus === st
-                  ? 'bg-sky-600 text-white dark:bg-white dark:text-black'
+                  ? 'glass-primary text-white'
                   : 'text-slate-600 dark:text-neutral-400'
               }`}
             >
@@ -312,7 +332,12 @@ export const HomeworkView: React.FC<HomeworkViewProps> = ({
                           <button
                             type="button"
                             aria-label={`Delete homework ${hw.title}`}
-                            onClick={() => onDeleteHomework(hw.id)}
+                            onClick={async () => {
+                              if (!window.confirm(`Delete “${hw.title}”?`)) return;
+                              setActionError('');
+                              try { await onDeleteHomework(hw.id); }
+                              catch (error) { setActionError(error instanceof Error ? error.message : 'Unable to delete homework.'); }
+                            }}
                             className="p-1.5 rounded-lg text-slate-400 hover:text-rose-600 dark:hover:text-white"
                           >
                             <Trash2 className="w-3.5 h-3.5" />
@@ -336,10 +361,10 @@ export const HomeworkView: React.FC<HomeworkViewProps> = ({
           aria-modal="true"
           aria-label="Assign Homework"
         >
-          <form onSubmit={handleAssignSubmit} className="liquid-glass-strong w-full max-w-xl max-h-[90vh] overflow-y-auto rounded-3xl p-6 space-y-4">
+          <form onSubmit={handleAssignSubmit} className="glass-dialog-panel liquid-glass-strong w-full max-w-xl rounded-3xl p-5 sm:p-6 space-y-4">
             <div className="flex items-center justify-between">
               <h2 className="text-lg font-bold text-slate-950 dark:text-white">Assign Homework</h2>
-              <button type="button" onClick={() => setShowAddModal(false)} aria-label="Close homework modal" className="p-2 rounded-xl">
+              <button type="button" disabled={saving} onClick={() => setShowAddModal(false)} aria-label="Close homework modal" className="p-2 rounded-xl">
                 <X className="w-4 h-4" />
               </button>
             </div>
@@ -387,7 +412,7 @@ export const HomeworkView: React.FC<HomeworkViewProps> = ({
                       }
                       className={`px-2.5 py-1.5 rounded-lg text-xs font-medium border ${
                         selected
-                          ? 'bg-sky-600 text-white border-sky-600 dark:bg-white dark:text-black dark:border-white'
+                          ? 'glass-primary text-white border-sky-600 dark:border-white'
                           : 'bg-white/70 dark:bg-black border-sky-200 dark:border-white/15 text-slate-700 dark:text-neutral-300'
                       }`}
                     >
@@ -506,9 +531,11 @@ export const HomeworkView: React.FC<HomeworkViewProps> = ({
               </div>
             </div>
 
+            {assignError && <p role="alert" className="text-sm text-rose-700 dark:text-rose-200">{assignError}</p>}
             <div className="flex justify-end gap-2 pt-2">
               <button
                 type="button"
+                disabled={saving}
                 onClick={() => setShowAddModal(false)}
                 className="px-4 py-2 rounded-xl text-xs font-medium border border-sky-200 dark:border-white/20"
               >
@@ -517,7 +544,7 @@ export const HomeworkView: React.FC<HomeworkViewProps> = ({
               <button
                 type="submit"
                 disabled={saving}
-                className="px-5 py-2 rounded-xl text-xs font-semibold bg-sky-600 dark:bg-white text-white dark:text-black"
+                className="px-5 py-2 rounded-xl text-xs font-semibold glass-primary text-white"
               >
                 {saving ? 'Assigning...' : 'Assign Task'}
               </button>
@@ -538,6 +565,86 @@ interface ExamsViewProps {
   onDeleteExam: (id: string) => Promise<void>;
 }
 
+interface ExamEditProps {
+  exam: ExamItem;
+  onUpdate: ExamsViewProps['onUpdateExam'];
+}
+
+function ExamProgress({ exam, onUpdate }: ExamEditProps) {
+  const [value, setValue] = useState(exam.preparationStatus);
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState('');
+
+  const save = async () => {
+    setSaving(true);
+    setError('');
+    try { await onUpdate(exam.id, { preparationStatus: value }); }
+    catch (err) { setError(err instanceof Error ? err.message : 'Unable to save preparation progress.'); }
+    finally { setSaving(false); }
+  };
+
+  return (
+    <div className="space-y-1">
+      <label className="flex items-center justify-between text-xs" htmlFor={`progress-${exam.id}`}>
+        <span className="text-slate-600 dark:text-neutral-300">Preparation progress</span>
+        <span className="tabular-nums font-semibold">{value}%</span>
+      </label>
+      <div className="flex min-h-9 items-center gap-3">
+        <input id={`progress-${exam.id}`} type="range" min={0} max={100} step={5} value={value}
+          aria-label={`Preparation progress for ${exam.examName}`} disabled={saving}
+          onChange={(event) => setValue(Number(event.target.value))} className="w-full min-w-0" />
+        {value !== exam.preparationStatus && (
+          <button type="button" onClick={save} disabled={saving} className="min-h-9 shrink-0 rounded-lg px-2 text-xs font-semibold text-sky-700 dark:text-sky-300">
+            {saving ? 'Saving…' : 'Save progress'}
+          </button>
+        )}
+      </div>
+      {error && <p role="alert" className="text-left text-sm text-rose-700 dark:text-rose-200">{error}</p>}
+    </div>
+  );
+}
+
+function ExamMarksForm({ exam, onUpdate, onClose }: ExamEditProps & { onClose: () => void }) {
+  const [value, setValue] = useState(exam.obtainedMarks?.toString() ?? '');
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState('');
+
+  const submit = async (event: React.FormEvent) => {
+    event.preventDefault();
+    if (saving) return;
+    const marks = Number(value);
+    if (!value.trim() || !Number.isFinite(marks) || marks < 0 || marks > exam.maxMarks) {
+      setError(`Enter a score between 0 and ${exam.maxMarks}.`);
+      return;
+    }
+    setSaving(true);
+    setError('');
+    try {
+      await onUpdate(exam.id, { obtainedMarks: marks, preparationStatus: 100 });
+      onClose();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Unable to save marks.');
+    } finally { setSaving(false); }
+  };
+
+  return (
+    <form onSubmit={submit} className="space-y-2 text-left">
+      <div className="flex flex-wrap items-center gap-2">
+        <input type="number" inputMode="decimal" min={0} max={exam.maxMarks} step="any" required value={value}
+          onChange={(event) => setValue(event.target.value)} aria-label={`Marks out of ${exam.maxMarks}`}
+          placeholder={`Out of ${exam.maxMarks}`} className="min-h-10 min-w-24 flex-1 rounded-lg border border-sky-200 bg-white/85 px-2 text-sm dark:bg-neutral-950 dark:border-white/20" />
+        <button type="submit" disabled={saving} className="glass-primary min-h-10 rounded-lg px-3 text-xs font-semibold">
+          {saving ? 'Saving…' : 'Save marks'}
+        </button>
+        <button type="button" onClick={onClose} disabled={saving} aria-label="Cancel marks entry" className="grid size-10 place-items-center rounded-lg border border-sky-200 dark:border-white/20">
+          <X className="size-4" />
+        </button>
+      </div>
+      {error && <p role="alert" className="text-sm text-rose-700 dark:text-rose-200">{error}</p>}
+    </form>
+  );
+}
+
 export const ExamsView: React.FC<ExamsViewProps> = ({
   workspace,
   onCreateExam,
@@ -545,6 +652,11 @@ export const ExamsView: React.FC<ExamsViewProps> = ({
   onDeleteExam,
 }) => {
   const [showAdd, setShowAdd] = useState(false);
+  const [editingExam, setEditingExam] = useState<ExamItem | null>(null);
+  const [savingExam, setSavingExam] = useState(false);
+  const [examError, setExamError] = useState('');
+  const [removeError, setRemoveError] = useState('');
+  const dialog = useRef<HTMLDialogElement>(null);
   const [studentId, setStudentId] = useState(workspace.students.find((s) => s.status === 'active')?.id ?? '');
   const [subject, setSubject] = useState('Mathematics');
   const [examName, setExamName] = useState('');
@@ -554,7 +666,12 @@ export const ExamsView: React.FC<ExamsViewProps> = ({
   const [maxMarks, setMaxMarks] = useState(40);
   const [revisionPlan, setRevisionPlan] = useState('');
   const [marksEntryId, setMarksEntryId] = useState<string | null>(null);
-  const [marksValue, setMarksValue] = useState('');
+  const activeStudents = workspace.students.filter((student) => student.status === 'active');
+  const subjects = workspace.settings.subjects.length ? workspace.settings.subjects : ['General'];
+
+  useEffect(() => {
+    if (showAdd && !dialog.current?.open) dialog.current?.showModal();
+  }, [showAdd]);
 
   const studentMap = useMemo(() => new Map(workspace.students.map((s) => [s.id, s])), [workspace.students]);
 
@@ -572,23 +689,39 @@ export const ExamsView: React.FC<ExamsViewProps> = ({
     [workspace.exams],
   );
 
-  const handleAdd = async (e: React.FormEvent) => {
+  const openExam = (exam?: ExamItem) => {
+    setEditingExam(exam ?? null);
+    setStudentId(exam?.studentId ?? activeStudents[0]?.id ?? '');
+    setSubject(exam?.subject ?? subjects[0]);
+    setExamName(exam?.examName ?? '');
+    setExamType(exam?.examType ?? 'unit_test');
+    setExamDate(exam?.examDate ?? addDaysToDateStr(workspace.todayIst, 3));
+    setSyllabus(exam?.syllabus ?? '');
+    setMaxMarks(exam?.maxMarks ?? 40);
+    setRevisionPlan(exam?.revisionPlan ?? '');
+    setExamError('');
+    setShowAdd(true);
+  };
+
+  const handleSaveExam = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!studentId || !examName.trim()) return;
-    await onCreateExam({
-      studentId,
-      subject,
-      examName: examName.trim(),
-      examType,
-      examDate,
-      syllabus: syllabus.trim(),
-      maxMarks,
-      revisionPlan: revisionPlan.trim() || 'Daily 20-minute paced revision',
-      preparationStatus: 30,
-    });
-    setExamName('');
-    setSyllabus('');
-    setShowAdd(false);
+    if (savingExam) return;
+    if (!studentId || examName.trim().length < 2) {
+      setExamError('Choose a student and enter an exam name of at least two characters.');
+      return;
+    }
+    setSavingExam(true);
+    setExamError('');
+    const details = { subject, examName: examName.trim(), examType, examDate, syllabus: syllabus.trim(), maxMarks, revisionPlan: revisionPlan.trim() };
+    try {
+      if (editingExam) await onUpdateExam(editingExam.id, details);
+      else await onCreateExam({ ...details, studentId, preparationStatus: 0 });
+      setShowAdd(false);
+    } catch (error) {
+      setExamError(error instanceof Error ? error.message : 'Unable to save the exam.');
+    } finally {
+      setSavingExam(false);
+    }
   };
 
   return (
@@ -602,13 +735,16 @@ export const ExamsView: React.FC<ExamsViewProps> = ({
         </div>
         <button
           type="button"
-          onClick={() => setShowAdd(true)}
-          className="inline-flex items-center gap-1.5 px-4 py-2.5 rounded-xl text-xs font-semibold bg-sky-600 hover:bg-sky-700 dark:bg-white dark:hover:bg-neutral-200 text-white dark:text-black whitespace-nowrap self-start"
+          disabled={!activeStudents.length}
+          onClick={() => openExam()}
+          className="inline-flex items-center gap-1.5 px-4 py-2.5 rounded-xl text-xs font-semibold glass-primary text-white whitespace-nowrap self-start"
         >
           <Plus className="w-4 h-4" />
           <span>Add Examination</span>
         </button>
       </div>
+      {!activeStudents.length && <p className="text-sm text-slate-600 dark:text-neutral-300">Add an active student before scheduling an exam.</p>}
+      {removeError && <p role="alert" className="text-sm text-rose-700 dark:text-rose-200">{removeError}</p>}
 
       {/* Upcoming Exams */}
       <section className="space-y-3">
@@ -623,7 +759,7 @@ export const ExamsView: React.FC<ExamsViewProps> = ({
           <div className="grid md:grid-cols-2 gap-4">
             {upcoming.map((ex) => {
               const stu = studentMap.get(ex.studentId);
-              const urgent = ex.daysUntil <= 1;
+              const urgent = ex.daysUntil >= 0 && ex.daysUntil <= 1;
               return (
                 <div key={ex.id} className="liquid-glass rounded-3xl p-5 space-y-3.5">
                   <div className="flex items-start justify-between gap-3">
@@ -644,14 +780,24 @@ export const ExamsView: React.FC<ExamsViewProps> = ({
                         {ex.subject} · {ex.examName} · Max {ex.maxMarks} marks{urgent ? ' · Auto-prioritized today' : ''}
                       </p>
                     </div>
-                    <button
-                      type="button"
-                      onClick={() => onDeleteExam(ex.id)}
-                      aria-label={`Delete exam ${ex.examName}`}
-                      className="p-1.5 text-slate-400 hover:text-rose-600 dark:hover:text-white"
-                    >
-                      <Trash2 className="w-4 h-4" />
-                    </button>
+                    <div className="flex gap-1">
+                      <button type="button" onClick={() => openExam(ex)} aria-label={`Edit exam ${ex.examName}`} className="p-2 text-sky-700 dark:text-sky-300">
+                        <Pencil className="w-4 h-4" />
+                      </button>
+                      <button
+                        type="button"
+                        onClick={async () => {
+                          if (!window.confirm(`Delete “${ex.examName}”?`)) return;
+                          setRemoveError('');
+                          try { await onDeleteExam(ex.id); }
+                          catch (error) { setRemoveError(error instanceof Error ? error.message : 'Unable to delete the exam.'); }
+                        }}
+                        aria-label={`Delete exam ${ex.examName}`}
+                        className="p-2 text-slate-500 hover:text-rose-600 dark:hover:text-rose-300"
+                      >
+                        <Trash2 className="w-4 h-4" />
+                      </button>
+                    </div>
                   </div>
 
                   {ex.syllabus && (
@@ -665,56 +811,15 @@ export const ExamsView: React.FC<ExamsViewProps> = ({
                     </p>
                   )}
 
-                  <div className="space-y-1.5">
-                    <div className="flex items-center justify-between text-xs">
-                      <span className="text-slate-600 dark:text-neutral-400">Preparation Progress</span>
-                      <span className="font-mono font-semibold text-slate-900 dark:text-white">{ex.preparationStatus}%</span>
-                    </div>
-                    <input
-                      type="range"
-                      aria-label={`Preparation progress for ${ex.examName}`}
-                      min={0}
-                      max={100}
-                      step={5}
-                      value={ex.preparationStatus}
-                      onChange={(e) => onUpdateExam(ex.id, { preparationStatus: Number(e.target.value) })}
-                      className="w-full accent-sky-600 dark:accent-white"
-                    />
-                  </div>
+                  <ExamProgress key={`${ex.id}:${ex.preparationStatus}`} exam={ex} onUpdate={onUpdateExam} />
 
                   <div className="flex items-center justify-between pt-2 border-t border-sky-100 dark:border-white/15">
                     {marksEntryId === ex.id ? (
-                      <div className="flex items-center gap-2 w-full">
-                        <input
-                          type="number"
-                          min={0}
-                          max={ex.maxMarks}
-                          value={marksValue}
-                          onChange={(e) => setMarksValue(e.target.value)}
-                          placeholder={`Marks / ${ex.maxMarks}`}
-                          className="flex-1 px-3 py-1.5 rounded-lg bg-white dark:bg-black border border-sky-200 dark:border-white/20 text-xs font-mono"
-                        />
-                        <button
-                          type="button"
-                          onClick={async () => {
-                            const num = Number(marksValue);
-                            if (!Number.isFinite(num)) return;
-                            await onUpdateExam(ex.id, { obtainedMarks: num, preparationStatus: 100 });
-                            setMarksEntryId(null);
-                            setMarksValue('');
-                          }}
-                          className="px-3 py-1.5 rounded-lg text-xs font-semibold bg-sky-600 dark:bg-white text-white dark:text-black"
-                        >
-                          Save
-                        </button>
-                      </div>
+                      <ExamMarksForm exam={ex} onUpdate={onUpdateExam} onClose={() => setMarksEntryId(null)} />
                     ) : (
                       <button
                         type="button"
-                        onClick={() => {
-                          setMarksEntryId(ex.id);
-                          setMarksValue('');
-                        }}
+                        onClick={() => setMarksEntryId(ex.id)}
                         className="inline-flex items-center gap-1.5 text-xs font-semibold text-sky-700 dark:text-white hover:underline"
                       >
                         <GraduationCap className="w-4 h-4" />
@@ -756,7 +861,13 @@ export const ExamsView: React.FC<ExamsViewProps> = ({
                     </td>
                     <td className="py-3 px-3 font-mono text-xs text-slate-500 dark:text-neutral-400">{ex.examDate}</td>
                     <td className="py-3 pl-3 text-right font-mono tabular-nums text-xs font-bold text-slate-950 dark:text-white">
-                      {ex.obtainedMarks}/{ex.maxMarks} ({pct}%)
+                      {marksEntryId === ex.id ? (
+                        <ExamMarksForm exam={ex} onUpdate={onUpdateExam} onClose={() => setMarksEntryId(null)} />
+                      ) : (
+                        <button type="button" onClick={() => setMarksEntryId(ex.id)} aria-label={`Edit marks for ${ex.examName}`} className="inline-flex items-center gap-1.5 min-h-9 hover:underline">
+                          {ex.obtainedMarks}/{ex.maxMarks} ({pct}%) <Pencil className="w-3 h-3" />
+                        </button>
+                      )}
                     </td>
                   </tr>
                 );
@@ -767,46 +878,54 @@ export const ExamsView: React.FC<ExamsViewProps> = ({
       </section>
 
       {showAdd && (
-        <div
-          className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/50 dark:bg-black/80 backdrop-blur-sm p-4"
-          role="dialog"
-          aria-modal="true"
-          aria-label="Add Examination"
+        <dialog
+          ref={dialog}
+          className="glass-dialog-panel liquid-glass-strong m-auto w-[calc(100%-2rem)] max-w-lg rounded-3xl text-slate-950 dark:text-white"
+          aria-labelledby="exam-dialog-title"
+          onCancel={(event) => { event.preventDefault(); if (!savingExam) setShowAdd(false); }}
         >
-          <form onSubmit={handleAdd} className="liquid-glass-strong w-full max-w-lg rounded-3xl p-6 space-y-4">
+          <form onSubmit={handleSaveExam} className="p-5 sm:p-6 space-y-4">
             <div className="flex items-center justify-between">
-              <h2 className="text-lg font-bold text-slate-950 dark:text-white">Schedule Examination</h2>
-              <button type="button" onClick={() => setShowAdd(false)} aria-label="Close exam modal"><X className="w-4 h-4" /></button>
+              <h2 id="exam-dialog-title" className="text-lg font-bold">{editingExam ? 'Edit Examination' : 'Schedule Examination'}</h2>
+              <button type="button" disabled={savingExam} onClick={() => setShowAdd(false)} aria-label="Close exam modal" className="p-2"><X className="w-4 h-4" /></button>
             </div>
             <div className="grid sm:grid-cols-2 gap-3">
               <div>
-                <label className="block text-xs font-medium text-slate-700 dark:text-neutral-300 mb-1">Student</label>
+                <label htmlFor="exam-student" className="block text-xs font-medium text-slate-700 dark:text-neutral-300 mb-1">Student</label>
                 <select
+                  id="exam-student"
+                  disabled={Boolean(editingExam)}
+                  required
                   value={studentId}
                   onChange={(e) => setStudentId(e.target.value)}
                   className="w-full px-3 py-2 rounded-xl bg-white/80 dark:bg-black border border-sky-200 dark:border-white/20 text-sm text-slate-900 dark:text-white"
                 >
-                  {workspace.students.filter((s) => s.status === 'active').map((s) => (
+                  {(editingExam ? workspace.students.filter((s) => s.id === studentId) : activeStudents).map((s) => (
                     <option key={s.id} value={s.id}>{s.nickname ? `${s.nickname} (${s.fullName})` : s.fullName} (Class {s.classLevel})</option>
                   ))}
                 </select>
               </div>
               <div>
-                <label className="block text-xs font-medium text-slate-700 dark:text-neutral-300 mb-1">Subject</label>
+                <label htmlFor="exam-subject" className="block text-xs font-medium text-slate-700 dark:text-neutral-300 mb-1">Subject</label>
                 <select
+                  id="exam-subject"
                   value={subject}
                   onChange={(e) => setSubject(e.target.value)}
                   className="w-full px-3 py-2 rounded-xl bg-white/80 dark:bg-black border border-sky-200 dark:border-white/20 text-sm text-slate-900 dark:text-white"
                 >
-                  {workspace.settings.subjects.map((sub) => (
+                  {!subjects.includes(subject) && <option value={subject}>{subject}</option>}
+                  {subjects.map((sub) => (
                     <option key={sub} value={sub}>{sub}</option>
                   ))}
                 </select>
               </div>
               <div className="sm:col-span-2">
-                <label className="block text-xs font-medium text-slate-700 dark:text-neutral-300 mb-1">Exam Name *</label>
+                <label htmlFor="exam-name" className="block text-xs font-medium text-slate-700 dark:text-neutral-300 mb-1">Exam Name</label>
                 <input
+                  id="exam-name"
                   required
+                  minLength={2}
+                  maxLength={120}
                   value={examName}
                   onChange={(e) => setExamName(e.target.value)}
                   placeholder="e.g. Unit Test 2 — Quadratic Equations"
@@ -814,19 +933,23 @@ export const ExamsView: React.FC<ExamsViewProps> = ({
                 />
               </div>
               <div>
-                <label className="block text-xs font-medium text-slate-700 dark:text-neutral-300 mb-1">Exam Date</label>
+                <label htmlFor="exam-date" className="block text-xs font-medium text-slate-700 dark:text-neutral-300 mb-1">Exam Date</label>
                 <input
+                  id="exam-date"
                   type="date"
+                  required
                   value={examDate}
                   onChange={(e) => setExamDate(e.target.value)}
                   className="w-full px-3 py-2 rounded-xl bg-white/80 dark:bg-black border border-sky-200 dark:border-white/20 text-sm font-mono text-slate-900 dark:text-white"
                 />
               </div>
               <div>
-                <label className="block text-xs font-medium text-slate-700 dark:text-neutral-300 mb-1">Max Marks</label>
+                <label htmlFor="exam-max" className="block text-xs font-medium text-slate-700 dark:text-neutral-300 mb-1">Max Marks</label>
                 <input
+                  id="exam-max"
                   type="number"
-                  min={5}
+                  required
+                  min={1}
                   max={500}
                   value={maxMarks}
                   onChange={(e) => setMaxMarks(Number(e.target.value))}
@@ -834,8 +957,9 @@ export const ExamsView: React.FC<ExamsViewProps> = ({
                 />
               </div>
               <div>
-                <label className="block text-xs font-medium text-slate-700 dark:text-neutral-300 mb-1">Exam Type</label>
+                <label htmlFor="exam-type" className="block text-xs font-medium text-slate-700 dark:text-neutral-300 mb-1">Exam Type</label>
                 <select
+                  id="exam-type"
                   value={examType}
                   onChange={(e) => setExamType(e.target.value as ExamType)}
                   className="w-full px-3 py-2 rounded-xl bg-white/80 dark:bg-black border border-sky-200 dark:border-white/20 text-xs text-slate-900 dark:text-white"
@@ -848,8 +972,10 @@ export const ExamsView: React.FC<ExamsViewProps> = ({
                 </select>
               </div>
               <div>
-                <label className="block text-xs font-medium text-slate-700 dark:text-neutral-300 mb-1">Revision Plan</label>
+                <label htmlFor="exam-revision" className="block text-xs font-medium text-slate-700 dark:text-neutral-300 mb-1">Revision Plan</label>
                 <input
+                  id="exam-revision"
+                  maxLength={500}
                   value={revisionPlan}
                   onChange={(e) => setRevisionPlan(e.target.value)}
                   placeholder="20 min daily practice"
@@ -857,8 +983,10 @@ export const ExamsView: React.FC<ExamsViewProps> = ({
                 />
               </div>
               <div className="sm:col-span-2">
-                <label className="block text-xs font-medium text-slate-700 dark:text-neutral-300 mb-1">Syllabus / Chapters</label>
+                <label htmlFor="exam-syllabus" className="block text-xs font-medium text-slate-700 dark:text-neutral-300 mb-1">Syllabus / Chapters</label>
                 <input
+                  id="exam-syllabus"
+                  maxLength={400}
                   value={syllabus}
                   onChange={(e) => setSyllabus(e.target.value)}
                   placeholder="Chapters 4, 5 & key diagrams"
@@ -866,12 +994,13 @@ export const ExamsView: React.FC<ExamsViewProps> = ({
                 />
               </div>
             </div>
+            {examError && <p role="alert" className="text-sm text-rose-700 dark:text-rose-200">{examError}</p>}
             <div className="flex justify-end gap-2 pt-2">
-              <button type="button" onClick={() => setShowAdd(false)} className="px-4 py-2 rounded-xl text-xs border border-sky-200 dark:border-white/20">Cancel</button>
-              <button type="submit" className="px-5 py-2 rounded-xl text-xs font-semibold bg-sky-600 dark:bg-white text-white dark:text-black">Save Exam</button>
+              <button type="button" disabled={savingExam} onClick={() => setShowAdd(false)} className="min-h-11 px-4 py-2 rounded-xl text-xs border border-sky-200 dark:border-white/20">Cancel</button>
+              <button type="submit" disabled={savingExam} className="glass-primary min-h-11 px-5 py-2 rounded-xl text-sm font-semibold">{savingExam ? 'Saving…' : 'Save Exam'}</button>
             </div>
           </form>
-        </div>
+        </dialog>
       )}
     </div>
   );

@@ -171,7 +171,7 @@ export const FeesView: React.FC<FeesViewProps> = ({
               setPaymentThroughMonth(null);
               setPaymentModalStudentId(workspace.students.find((s) => s.status === 'active')?.id ?? null);
             }}
-            className="inline-flex items-center gap-1.5 px-4 py-2.5 rounded-xl text-xs font-semibold bg-sky-600 hover:bg-sky-700 dark:bg-white dark:hover:bg-neutral-200 text-white dark:text-black whitespace-nowrap"
+            className="inline-flex items-center gap-1.5 px-4 py-2.5 rounded-xl text-xs font-semibold glass-primary text-white whitespace-nowrap"
           >
             <IndianRupee className="w-4 h-4" />
             <span>Record Payment</span>
@@ -212,7 +212,7 @@ export const FeesView: React.FC<FeesViewProps> = ({
               onClick={() => setTab(id)}
               className={`px-3 py-1.5 rounded-lg text-xs font-semibold whitespace-nowrap ${
                 tab === id
-                  ? 'bg-sky-600 text-white dark:bg-white dark:text-black'
+                  ? 'glass-primary text-white'
                   : 'text-slate-600 dark:text-neutral-400'
               }`}
             >
@@ -325,7 +325,7 @@ export const FeesView: React.FC<FeesViewProps> = ({
                                 setPaymentThroughMonth(selectedMonth);
                                 setPaymentModalStudentId(inv.studentId);
                               }}
-                              className="min-h-10 px-2.5 rounded-lg text-xs font-semibold bg-sky-600 dark:bg-white text-white dark:text-black"
+                              className="min-h-10 px-2.5 rounded-lg text-xs font-semibold glass-primary text-white"
                             >
                               Collect
                             </button>
@@ -385,7 +385,7 @@ export const FeesView: React.FC<FeesViewProps> = ({
                         setPaymentThroughMonth(null);
                         setPaymentModalStudentId(rem.studentId);
                       }}
-                      className="px-3.5 py-1.5 rounded-xl text-xs font-semibold bg-sky-600 dark:bg-white text-white dark:text-black"
+                      className="px-3.5 py-1.5 rounded-xl text-xs font-semibold glass-primary text-white"
                     >
                       Record Paid
                     </button>
@@ -416,7 +416,7 @@ export const FeesView: React.FC<FeesViewProps> = ({
             <button
               type="button"
               onClick={() => setShowDiscountModal(true)}
-              className="inline-flex items-center gap-1.5 px-3.5 py-2 rounded-xl text-xs font-semibold bg-sky-600 dark:bg-white text-white dark:text-black"
+              className="inline-flex items-center gap-1.5 px-3.5 py-2 rounded-xl text-xs font-semibold glass-primary text-white"
             >
               <Plus className="w-3.5 h-3.5" />
               <span>Add Discount</span>
@@ -631,7 +631,7 @@ export const FeesView: React.FC<FeesViewProps> = ({
               <button
                 type="button"
                 onClick={() => window.print()}
-                className="inline-flex items-center gap-1.5 px-4 py-2 rounded-xl text-xs font-semibold bg-sky-600 dark:bg-white text-white dark:text-black"
+                className="inline-flex items-center gap-1.5 px-4 py-2 rounded-xl text-xs font-semibold glass-primary text-white"
               >
                 <Printer className="w-3.5 h-3.5" />
                 <span>Print / Save PDF</span>
@@ -920,7 +920,7 @@ const RecordPaymentModal: React.FC<{
           <button
             type="submit"
             disabled={saving}
-            className="px-5 py-2 rounded-xl text-xs font-semibold bg-sky-600 dark:bg-white text-white dark:text-black"
+            className="px-5 py-2 rounded-xl text-xs font-semibold glass-primary text-white"
           >
             {saving ? 'Recording...' : 'Save payment'}
           </button>
@@ -1073,7 +1073,7 @@ const AddDiscountModal: React.FC<{
 
         <div className="flex justify-end gap-2 pt-2">
           <button type="button" onClick={onClose} className="px-4 py-2 rounded-xl text-xs border border-sky-200 dark:border-white/20">Cancel</button>
-          <button type="submit" className="px-5 py-2 rounded-xl text-xs font-semibold bg-sky-600 dark:bg-white text-white dark:text-black">Save Discount</button>
+          <button type="submit" className="px-5 py-2 rounded-xl text-xs font-semibold glass-primary text-white">Save Discount</button>
         </div>
       </form>
     </div>

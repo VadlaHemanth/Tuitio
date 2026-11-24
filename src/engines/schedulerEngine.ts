@@ -121,9 +121,10 @@ export function generateDailyTuitionPlan(params: {
     // Homework urgency & help needs
     for (const h of pendingHw) {
       const daysDue = diffDaysBetweenDateStrs(date, h.dueDate);
+      const topic = h.topic.trim() || h.chapter.trim();
       if (h.needsHelp) {
         urgencyScore += 22;
-        reasons.push(`Needs help on ${h.subject}: ${h.topic}`);
+        reasons.push(`Needs help on ${h.subject}: ${topic || h.title}`);
       }
       if (daysDue <= 0) {
         urgencyScore += 20;
@@ -140,9 +141,9 @@ export function generateDailyTuitionPlan(params: {
       }
 
       // Collect shared topics for Rule G (group teaching suggestions)
-      const key = `${h.subject.toLowerCase()}::${h.topic.trim().toLowerCase()}`;
-      if (h.needsHelp || h.priority === 'urgent' || h.priority === 'high') {
-        const bucket = topicBuckets.get(key) ?? { subject: h.subject, topic: h.topic, students: [] };
+      if (topic && (h.needsHelp || h.priority === 'urgent' || h.priority === 'high')) {
+        const key = `${h.subject.toLowerCase()}::${topic.toLowerCase()}`;
+        const bucket = topicBuckets.get(key) ?? { subject: h.subject, topic, students: [] };
         if (!bucket.students.some((st) => st.id === s.id)) {
           bucket.students.push(s);
         }

@@ -22,6 +22,12 @@ interface OfflineQueuedMutation {
 const OFFLINE_QUEUE_KEY = 'tuitio_offline_queue_v1';
 const SNAPSHOT_CACHE_KEY = 'tuitio_snapshot_cache_v1';
 
+export class OfflineQueuedError extends Error {
+  constructor() {
+    super('Saved offline. Syncs when connected.');
+  }
+}
+
 export function getOfflineQueue(): OfflineQueuedMutation[] {
   try {
     const raw = localStorage.getItem(OFFLINE_QUEUE_KEY);
@@ -32,11 +38,7 @@ export function getOfflineQueue(): OfflineQueuedMutation[] {
 }
 
 function saveOfflineQueue(items: OfflineQueuedMutation[]) {
-  try {
-    localStorage.setItem(OFFLINE_QUEUE_KEY, JSON.stringify(items));
-  } catch {
-    // Ignore storage quota errors
-  }
+  localStorage.setItem(OFFLINE_QUEUE_KEY, JSON.stringify(items));
 }
 
 export function cacheWorkspaceSnapshot(snapshot: WorkspaceSnapshot) {
@@ -55,6 +57,10 @@ export function loadCachedWorkspaceSnapshot(): WorkspaceSnapshot | null {
   } catch {
     return null;
   }
+}
+
+export function clearCachedWorkspaceSnapshot() {
+  try { localStorage.removeItem(SNAPSHOT_CACHE_KEY); } catch { /* The cache may be disabled. */ }
 }
 
 export async function apiRequest<T>(
@@ -110,31 +116,45 @@ export async function apiRequest<T>(
         createdAt: new Date().toISOString(),
         label: offlineLabel,
       });
-      saveOfflineQueue(queue);
-      throw new Error('Saved offline — will sync automatically once connected.');
+      try {
+        saveOfflineQueue(queue);
+      } catch {
+        throw new Error('Could not save offline. Reconnect and try again.');
+      }
+      throw new OfflineQueuedError();
     }
     throw err;
   }
 }
 
-export async function flushOfflineQueue(): Promise<{ synced: number; remaining: number }> {
+let offlineFlush: Promise<{ synced: number; remaining: number }> | undefined;
+
+export function flushOfflineQueue() {
+  offlineFlush ??= replayOfflineQueue().finally(() => { offlineFlush = undefined; });
+  return offlineFlush;
+}
+
+async function replayOfflineQueue(): Promise<{ synced: number; remaining: number }> {
   const queue = getOfflineQueue();
   if (queue.length === 0 || !navigator.onLine) {
     return { synced: 0, remaining: queue.length };
   }
 
   let synced = 0;
-  const remaining: OfflineQueuedMutation[] = [];
+  const syncedIds = new Set<string>();
 
   for (const item of queue) {
     try {
       await apiRequest(item.url, { method: item.method, body: item.body });
       synced += 1;
+      syncedIds.add(item.id);
     } catch {
-      remaining.push(item);
+      // Later writes may depend on this one. Resume from here on the next sync.
+      break;
     }
   }
-  saveOfflineQueue(remaining);
+  const remaining = getOfflineQueue().filter((item) => !syncedIds.has(item.id));
+  if (syncedIds.size) saveOfflineQueue(remaining);
   return { synced, remaining: remaining.length };
 }
 

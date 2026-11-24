@@ -163,7 +163,7 @@ export const CommandCenter: React.FC<CommandCenterProps> = ({
             <button
               type="button"
               onClick={() => onSetLiveMode(false)}
-              className="px-4 py-2.5 rounded-xl text-xs font-semibold bg-sky-600 hover:bg-sky-700 dark:bg-white dark:hover:bg-neutral-200 text-white dark:text-black inline-flex items-center gap-1.5 whitespace-nowrap"
+              className="px-4 py-2.5 rounded-xl text-xs font-semibold glass-primary text-white inline-flex items-center gap-1.5 whitespace-nowrap"
             >
               <X className="w-4 h-4" />
               <span>Exit Live Mode</span>
@@ -188,7 +188,7 @@ export const CommandCenter: React.FC<CommandCenterProps> = ({
                   onSetLiveMode(false);
                   onOpenStudent(dailyPlan.nextBestActions[0].studentId!);
                 }}
-                className="px-4 py-2 rounded-xl text-xs font-semibold bg-sky-600 dark:bg-white text-white dark:text-black whitespace-nowrap"
+                className="px-4 py-2 rounded-xl text-xs font-semibold glass-primary text-white whitespace-nowrap"
               >
                 Open Student
               </button>
@@ -225,7 +225,7 @@ export const CommandCenter: React.FC<CommandCenterProps> = ({
                         <button
                           type="button"
                           onClick={() => onQuickAttendance(sp.studentId, 'present')}
-                          className="px-2.5 py-1.5 rounded-lg text-xs font-semibold bg-sky-600 dark:bg-white text-white dark:text-black"
+                          className="px-2.5 py-1.5 rounded-lg text-xs font-semibold glass-primary text-white"
                         >
                           Mark Present
                         </button>
@@ -272,7 +272,7 @@ export const CommandCenter: React.FC<CommandCenterProps> = ({
                           <button
                             type="button"
                             onClick={() => onQuickHomeworkUpdate(hw.id, { status: 'completed', completionPct: 100, needsHelp: false })}
-                            className="px-2.5 py-1.5 rounded-lg text-xs font-semibold bg-sky-600 dark:bg-white text-white dark:text-black"
+                            className="px-2.5 py-1.5 rounded-lg text-xs font-semibold glass-primary text-white"
                           >
                             Done
                           </button>
@@ -300,16 +300,16 @@ export const CommandCenter: React.FC<CommandCenterProps> = ({
   return (
     <div className="space-y-6">
       {/* Top Hero Strip: Immediate Answer to "What do I need to do today?" */}
-      <section className="liquid-glass-strong rounded-3xl p-5 sm:p-7 flex flex-col lg:flex-row lg:items-center lg:justify-between gap-5">
+      <section className="tuition-overview liquid-glass-strong rounded-3xl p-5 sm:p-7 flex flex-col xl:flex-row xl:items-center xl:justify-between gap-5">
         <div className="space-y-1.5">
           <p className="text-xs font-medium text-sky-700 dark:text-neutral-400">
-            Today’s Tuition Command Center · {workspace.todayIst} · {formatHHMMTo12Hour(workspace.settings.sessionStart)}–{formatHHMMTo12Hour(workspace.settings.sessionEnd)} IST
+            {new Intl.DateTimeFormat('en-IN', { weekday: 'long', day: 'numeric', month: 'long', timeZone: 'UTC' }).format(new Date(workspace.todayIst))} · {formatHHMMTo12Hour(workspace.settings.sessionStart)}–{formatHHMMTo12Hour(workspace.settings.sessionEnd)} IST
           </p>
           <h1 className="text-2xl sm:text-3xl font-bold tracking-tight text-slate-950 dark:text-white">
-            Good evening, {workspace.settings.teacherName.split(' ')[0]}
+            Today’s tuition
           </h1>
           <p className="text-sm text-slate-600 dark:text-neutral-400 max-w-2xl">
-            {counts.expected} students scheduled today ({counts.present} present, {counts.unmarked} unmarked) · {dueTodayHw.length} homework due · {upcomingExams.filter((e) => e.daysUntil <= 3).length} urgent exam{upcomingExams.filter((e) => e.daysUntil <= 3).length === 1 ? '' : 's'} · {feeReminders.length} fee reminder{feeReminders.length === 1 ? '' : 's'}.
+            {counts.expected} students scheduled · {counts.unmarked} still to mark
           </p>
         </div>
 
@@ -317,7 +317,7 @@ export const CommandCenter: React.FC<CommandCenterProps> = ({
           <button
             type="button"
             onClick={() => onSetLiveMode(true)}
-            className="inline-flex items-center gap-2 px-4 py-2.5 rounded-xl text-sm font-semibold bg-sky-600 hover:bg-sky-700 dark:bg-white dark:hover:bg-neutral-200 text-white dark:text-black transition-colors whitespace-nowrap shrink-0"
+            className="inline-flex items-center gap-2 px-4 py-2.5 rounded-xl text-sm font-semibold glass-primary text-white transition-colors whitespace-nowrap shrink-0"
           >
             <Play className="w-4 h-4" />
             <span>Start Live Session</span>
@@ -559,7 +559,7 @@ export const CommandCenter: React.FC<CommandCenterProps> = ({
             <button
               type="button"
               onClick={() => onNavigate('students')}
-              className="px-4 py-2 rounded-xl text-xs font-semibold bg-sky-600 dark:bg-white text-white dark:text-black"
+              className="px-4 py-2 rounded-xl text-xs font-semibold glass-primary text-white"
             >
               Enroll Your First Student
             </button>
@@ -640,7 +640,7 @@ export const CommandCenter: React.FC<CommandCenterProps> = ({
                             <button
                               type="button"
                               onClick={() => onQuickAttendance(s.id, 'present')}
-                              className="px-3 py-1.5 rounded-lg text-xs font-semibold bg-sky-600 hover:bg-sky-700 dark:bg-white dark:hover:bg-neutral-200 text-white dark:text-black"
+                              className="px-3 py-1.5 rounded-lg text-xs font-semibold glass-primary text-white"
                             >
                               Mark Present
                             </button>

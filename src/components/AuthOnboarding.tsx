@@ -106,10 +106,10 @@ export const AuthOnboarding: React.FC<AuthOnboardingProps> = ({
   };
 
   return (
-    <div className="min-h-screen flex flex-col justify-between p-4 sm:p-8">
-      <header className="max-w-5xl w-full mx-auto flex items-center justify-between gap-4">
+    <div className="auth-shell flex flex-col px-4 sm:px-8">
+      <header className="auth-header max-w-5xl w-full mx-auto flex items-center justify-between gap-4">
         <div className="flex items-center gap-2.5">
-          <div className="w-9 h-9 rounded-xl bg-sky-600 dark:bg-white text-white dark:text-black flex items-center justify-center font-display font-extrabold text-lg">
+          <div className="w-9 h-9 rounded-xl glass-primary text-white flex items-center justify-center font-display font-extrabold text-lg">
             T
           </div>
           <span className="font-display font-bold text-lg tracking-tight text-slate-900 dark:text-white whitespace-nowrap">
@@ -123,37 +123,18 @@ export const AuthOnboarding: React.FC<AuthOnboardingProps> = ({
           className="inline-flex items-center gap-2 px-3.5 py-2 rounded-xl text-xs font-medium liquid-glass text-slate-700 dark:text-neutral-200 hover:bg-white dark:hover:bg-neutral-900 transition-colors whitespace-nowrap shrink-0"
         >
           {theme === 'dark' ? <Sun className="w-4 h-4" /> : <Moon className="w-4 h-4" />}
-          <span>{theme === 'dark' ? 'Light Glass' : 'Monochrome Dark'}</span>
+          <span>{theme === 'dark' ? 'Light mode' : 'Dark mode'}</span>
         </button>
       </header>
 
-      <main className="max-w-5xl w-full mx-auto my-8 grid lg:grid-cols-12 gap-8 items-center">
-        {/* Left Value Story */}
-        <div className="lg:col-span-6 space-y-6">
-          <p className="text-xs font-medium tracking-wide text-sky-700 dark:text-neutral-400">
-            Personal Tuition Operating System · Classes 3–10 · IST 6:00 PM–8:00 PM
-          </p>
-          <h1 className="text-3xl sm:text-5xl font-bold tracking-tight text-slate-950 dark:text-white leading-[1.12]">
-            One teacher. Every student, fee, and minute organized.
+      <main className="auth-layout max-w-5xl w-full mx-auto grid lg:grid-cols-12 gap-7 lg:gap-14 items-center">
+        <div className="lg:col-span-6 space-y-4">
+          <h1 className="max-w-lg text-3xl sm:text-5xl font-bold tracking-tight text-slate-950 dark:text-white leading-[1.1]">
+            Your tuition workspace
           </h1>
-          <p className="text-base text-slate-600 dark:text-neutral-400 leading-relaxed max-w-xl">
-            Open Tuitio at 5:30 PM to see who arrives when, swipe attendance in seconds, run parallel 6:00–8:00 PM study plans, track SSC/CBSE/ICSE fees automatically, and carry unfinished homework forward without clutter.
+          <p className="max-w-md text-sm sm:text-base text-slate-600 dark:text-neutral-300 leading-relaxed">
+            Mark attendance, plan lessons and keep track of exams and monthly fees.
           </p>
-
-          <div className="grid grid-cols-3 gap-4 pt-2 border-t border-sky-200/70 dark:border-white/15">
-            <div>
-              <p className="font-mono tabular-nums text-xl font-semibold text-slate-900 dark:text-white">6–8 PM</p>
-              <p className="text-xs text-slate-500 dark:text-neutral-400 mt-0.5">Parallel IST Planner</p>
-            </div>
-            <div>
-              <p className="font-mono tabular-nums text-xl font-semibold text-slate-900 dark:text-white">₹500–₹1,200</p>
-              <p className="text-xs text-slate-500 dark:text-neutral-400 mt-0.5">Auto Class & Board Fees</p>
-            </div>
-            <div>
-              <p className="font-mono tabular-nums text-xl font-semibold text-slate-900 dark:text-white">₹0 / mo</p>
-              <p className="text-xs text-slate-500 dark:text-neutral-400 mt-0.5">Cloudflare Free-Tier Ready</p>
-            </div>
-          </div>
 
           {!initialized && (
             <div className="pt-2">
@@ -175,13 +156,13 @@ export const AuthOnboarding: React.FC<AuthOnboardingProps> = ({
 
         {/* Right Card: Sign In or Setup Wizard */}
         <div className="lg:col-span-6">
-          <div className="liquid-glass-strong rounded-3xl p-6 sm:p-8">
+          <div className={`auth-card liquid-glass-strong rounded-[1.75rem] p-5 sm:p-8 ${initialized ? 'login-card' : ''}`}>
             {initialized ? (
               <form onSubmit={handleLogin} className="space-y-5">
                 <div>
-                  <h2 className="text-xl font-bold text-slate-900 dark:text-white">Teacher Sign In</h2>
+                  <h2 className="text-xl font-bold text-slate-900 dark:text-white">Sign in</h2>
                   <p className="text-sm text-slate-500 dark:text-neutral-400 mt-1">
-                    Private workspace. Sign in to access student profiles, attendance, and fees.
+                    Use your teacher account to open Tuitio.
                   </p>
                 </div>
 
@@ -199,6 +180,8 @@ export const AuthOnboarding: React.FC<AuthOnboardingProps> = ({
                     <input
                       id="login-email"
                       type="email"
+                      autoComplete="username"
+                      autoCapitalize="none"
                       required
                       value={email}
                       onChange={(e) => setEmail(e.target.value)}
@@ -213,6 +196,7 @@ export const AuthOnboarding: React.FC<AuthOnboardingProps> = ({
                     <input
                       id="login-password"
                       type="password"
+                      autoComplete="current-password"
                       required
                       value={password}
                       onChange={(e) => setPassword(e.target.value)}
@@ -225,10 +209,10 @@ export const AuthOnboarding: React.FC<AuthOnboardingProps> = ({
                 <button
                   type="submit"
                   disabled={submitting}
-                  className="w-full py-3 px-4 rounded-xl bg-sky-600 hover:bg-sky-700 dark:bg-white dark:hover:bg-neutral-200 text-white dark:text-black font-semibold text-sm flex items-center justify-center gap-2 transition-colors disabled:opacity-60"
+                  className="w-full py-3 px-4 rounded-xl glass-primary text-white font-semibold text-sm flex items-center justify-center gap-2 transition-colors disabled:opacity-60"
                 >
                   <Lock className="w-4 h-4" />
-                  <span>{submitting ? 'Signing in...' : 'Sign In to Workspace'}</span>
+                  <span>{submitting ? 'Signing in...' : 'Sign in'}</span>
                 </button>
               </form>
             ) : (
@@ -312,7 +296,7 @@ export const AuthOnboarding: React.FC<AuthOnboardingProps> = ({
                         setError(null);
                         setStep(2);
                       }}
-                      className="w-full py-3 px-4 rounded-xl bg-sky-600 hover:bg-sky-700 dark:bg-white dark:hover:bg-neutral-200 text-white dark:text-black font-semibold text-sm flex items-center justify-center gap-2 transition-colors"
+                      className="w-full py-3 px-4 rounded-xl glass-primary text-white font-semibold text-sm flex items-center justify-center gap-2 transition-colors"
                     >
                       <span>Continue to Batch Timings</span>
                       <ArrowRight className="w-4 h-4" />
@@ -374,7 +358,7 @@ export const AuthOnboarding: React.FC<AuthOnboardingProps> = ({
                               onClick={() => toggleBoard(b)}
                               className={`py-2.5 rounded-xl text-xs font-semibold border transition-colors ${
                                 active
-                                  ? 'bg-sky-600 text-white border-sky-600 dark:bg-white dark:text-black dark:border-white'
+                                  ? 'glass-primary text-white border-sky-600 dark:border-white'
                                   : 'bg-white/60 dark:bg-black text-slate-600 dark:text-neutral-400 border-sky-200 dark:border-white/15'
                               }`}
                             >
@@ -395,7 +379,7 @@ export const AuthOnboarding: React.FC<AuthOnboardingProps> = ({
                       <button
                         type="button"
                         onClick={() => setStep(3)}
-                        className="flex-1 py-3 px-4 rounded-xl bg-sky-600 hover:bg-sky-700 dark:bg-white dark:hover:bg-neutral-200 text-white dark:text-black font-semibold text-sm flex items-center justify-center gap-2"
+                        className="flex-1 py-3 px-4 rounded-xl glass-primary text-white font-semibold text-sm flex items-center justify-center gap-2"
                       >
                         <span>Review Fee Structure</span>
                         <ArrowRight className="w-4 h-4" />
@@ -455,7 +439,7 @@ export const AuthOnboarding: React.FC<AuthOnboardingProps> = ({
                       <button
                         type="submit"
                         disabled={submitting}
-                        className="flex-1 py-3 px-4 rounded-xl bg-sky-600 hover:bg-sky-700 dark:bg-white dark:hover:bg-neutral-200 text-white dark:text-black font-semibold text-sm flex items-center justify-center gap-2 disabled:opacity-60"
+                        className="flex-1 py-3 px-4 rounded-xl glass-primary text-white font-semibold text-sm flex items-center justify-center gap-2 disabled:opacity-60"
                       >
                         <Check className="w-4 h-4" />
                         <span>{submitting ? 'Creating Workspace...' : 'Create Account & Launch'}</span>
@@ -469,10 +453,6 @@ export const AuthOnboarding: React.FC<AuthOnboardingProps> = ({
         </div>
       </main>
 
-      <footer className="max-w-5xl w-full mx-auto text-xs text-slate-500 dark:text-neutral-500 flex flex-wrap items-center justify-between gap-2">
-        <span>Private single-teacher tuition OS · Asia/Kolkata (IST)</span>
-        <span>Self-hosted SQLite & Cloudflare D1 Free-Tier Architecture</span>
-      </footer>
     </div>
   );
 };

@@ -5,48 +5,91 @@
   --font-display: "Plus Jakarta Sans", system-ui, -apple-system, sans-serif;
   --font-sans: "DM Sans", system-ui, -apple-system, sans-serif;
   --font-mono: "JetBrains Mono", ui-monospace, SFMono-Regular, monospace;
+  --color-neutral-300: #c2d8e9;
+  --color-neutral-400: #a4bed3;
+  --color-neutral-500: #839fb8;
+  --color-neutral-600: #66859f;
+  --color-neutral-700: #34536f;
+  --color-neutral-800: #223d59;
+  --color-neutral-900: #142b43;
+  --color-neutral-950: #0c1e31;
 }
 
 @layer base {
   :root {
     color-scheme: light;
-    --glass-bg: rgba(255, 255, 255, 0.78);
-    --glass-bg-strong: rgba(255, 255, 255, 0.92);
-    --glass-border: rgba(186, 230, 253, 0.72);
-    --glass-shadow: 0 10px 30px -12px rgba(2, 132, 199, 0.14), 0 1px 3px rgba(15, 23, 42, 0.04);
+    --page-bg: #e7f2fc;
+    --page-ink: #102840;
+    --channel: #0284c7;
+    --focus-color: #0369a1;
+    --glass-bg: linear-gradient(161deg, #fffE, #f4faffdc 56%, #eaf5ffd4);
+    --glass-bg-strong: linear-gradient(155deg, #fffffff9 6%, #f2faff 52%, #d9edfc 100%);
+    --glass-chrome: linear-gradient(151deg, #fcfefff5, #e5f3fef4);
+    --glass-border: #b8d9ef;
+    --glass-edge: #fff;
+    --glass-shadow: 0 9px 24px -23px #1a5e92a6;
+    --strong-shadow: 0 16px 36px -26px #14548280, inset 0 -1px 0 #79b6e448;
+    --accent-top: #097ab6;
+    --accent-bottom: #075785;
+    --accent-edge: #055788;
+    --dialog-shade: #0a223c82;
+    --page-light: radial-gradient(ellipse 70rem 31rem at 85% 0%, #a9d9fc 0%, transparent 75%),
+      radial-gradient(ellipse 58rem 29rem at 4% 15rem, #f8fdff 0%, transparent 89%);
+    --dock-space: calc(4.25rem + env(safe-area-inset-bottom, 0px));
   }
 
   .dark {
     color-scheme: dark;
-    --glass-bg: rgba(14, 14, 14, 0.86);
-    --glass-bg-strong: rgba(18, 18, 18, 0.95);
-    --glass-border: rgba(255, 255, 255, 0.14);
-    --glass-shadow: 0 16px 40px -16px rgba(0, 0, 0, 0.85), inset 0 1px 0 rgba(255, 255, 255, 0.06);
+    --page-bg: #071321;
+    --page-ink: #ecf6ff;
+    --focus-color: #7dd3fc;
+    --glass-bg: linear-gradient(160deg, #1a3651cb, #0d2135ec 67%, #0e253ae0);
+    --glass-bg-strong: linear-gradient(151deg, #264963 0%, #142e46 50%, #102337 96%);
+    --glass-chrome: linear-gradient(150deg, #132e48fa, #0a1b2cf8 82%);
+    --glass-border: #365773;
+    --glass-edge: #709cb95c;
+    --glass-shadow: 0 10px 23px -21px #020813d6;
+    --strong-shadow: 0 16px 37px -27px #000c, inset 0 -1px 0 #79d1ff38;
+    --accent-top: #137db7;
+    --accent-bottom: #075688;
+    --accent-edge: #6cb9ec6b;
+    --dialog-shade: #020a14c8;
+    --page-light: radial-gradient(ellipse 61rem 32rem at 88% -3rem, #214c71 0%, transparent 78%),
+      radial-gradient(ellipse 42rem 27rem at 10% 22rem, #102941 0%, transparent 90%);
   }
 
   html {
     font-family: var(--font-sans);
-    scroll-behavior: smooth;
+    background: var(--page-bg);
+    -webkit-tap-highlight-color: transparent;
+    scroll-padding-top: calc(4rem + env(safe-area-inset-top, 0px));
   }
 
   body {
-    min-height: 100vh;
-    background-color: #F2F9FF;
-    background-image:
-      radial-gradient(ellipse 80% 55% at 10% -5%, rgba(186, 230, 253, 0.55), transparent 60%),
-      radial-gradient(ellipse 65% 50% at 92% 8%, rgba(224, 242, 254, 0.75), transparent 58%),
-      linear-gradient(180deg, #F6FBFF 0%, #EEF7FE 100%);
-    color: #0F172A;
-    transition: background-color 180ms ease, color 180ms ease;
+    min-height: 100dvh;
+    background: var(--page-light) var(--page-bg);
+    color: var(--page-ink);
   }
 
-  .dark body {
-    background-color: #000000;
-    background-image:
-      radial-gradient(ellipse 75% 45% at 15% 0%, rgba(255, 255, 255, 0.045), transparent 60%),
-      linear-gradient(180deg, #000000 0%, #050505 100%);
-    color: #FAFAFA;
-    letter-spacing: 0.005em;
+  button, a, [role="button"] {
+    touch-action: manipulation;
+  }
+
+  button:not(:disabled):active {
+    opacity: .82;
+  }
+
+  :where(button, a, input, select, textarea):focus-visible {
+    outline: 2px solid var(--focus-color);
+    outline-offset: 2px;
+  }
+
+  input[type="range"] {
+    accent-color: var(--focus-color);
+  }
+
+  button:disabled {
+    cursor: not-allowed;
   }
 
   h1, h2, h3, h4 {
@@ -57,26 +100,147 @@
 
 .liquid-glass {
   background: var(--glass-bg);
-  backdrop-filter: blur(18px) saturate(140%);
-  -webkit-backdrop-filter: blur(18px) saturate(140%);
   border: 1px solid var(--glass-border);
+  border-top-color: var(--glass-edge);
   box-shadow: var(--glass-shadow);
 }
 
 .liquid-glass-strong {
   background: var(--glass-bg-strong);
-  backdrop-filter: blur(22px) saturate(150%);
-  -webkit-backdrop-filter: blur(22px) saturate(150%);
   border: 1px solid var(--glass-border);
-  box-shadow: var(--glass-shadow);
+  border-top-color: var(--glass-edge);
+  box-shadow: var(--strong-shadow);
 }
 
-.tabular-nums {
-  font-variant-numeric: tabular-nums;
+.glass-primary {
+  color: #fff;
+  background: linear-gradient(180deg, var(--accent-top), var(--accent-bottom));
+  border: 1px solid var(--accent-edge);
+  box-shadow: inset 0 1px 0 #cfeeff57, inset 0 -1px 0 #0e9ad85e, 0 2px 6px #08244525;
 }
 
-.pb-safe {
-  padding-bottom: max(0.5rem, env(safe-area-inset-bottom));
+.glass-primary:disabled { opacity: .58; }
+
+@media (hover: hover) and (pointer: fine) {
+  button.glass-primary:not(:disabled):hover {
+    background: linear-gradient(180deg, #0b71a9, #044a77);
+  }
+}
+
+.glass-chrome {
+  background: var(--glass-chrome);
+  border-color: var(--glass-border);
+}
+
+.app-shell {
+  min-height: 100dvh;
+  padding-inline: env(safe-area-inset-left, 0px) env(safe-area-inset-right, 0px);
+}
+
+.app-toolbar {
+  min-height: calc(3.5rem + env(safe-area-inset-top, 0px));
+  padding-top: env(safe-area-inset-top, 0px);
+}
+
+.app-dock {
+  min-height: var(--dock-space);
+  padding-bottom: env(safe-area-inset-bottom, 0px);
+  padding-inline: max(.5rem, env(safe-area-inset-left, 0px)) max(.5rem, env(safe-area-inset-right, 0px));
+  box-shadow: 0 -5px 30px -20px #153f6d80;
+}
+
+.app-dock button > svg {
+  box-sizing: content-box;
+  padding: .25rem .625rem;
+  border-radius: .75rem;
+}
+
+.app-dock button[data-active="true"] > svg {
+  background: color-mix(in srgb, var(--channel) 15%, transparent);
+  color: var(--focus-color);
+}
+
+.auth-shell {
+  min-height: 100dvh;
+  padding-inline: max(1rem, env(safe-area-inset-left, 0px)) max(1rem, env(safe-area-inset-right, 0px));
+  padding-top: max(1.25rem, env(safe-area-inset-top, 0px));
+  padding-bottom: max(1.25rem, env(safe-area-inset-bottom, 0px));
+}
+
+.auth-layout {
+  margin-block: auto;
+  padding-block: clamp(2rem, 5vh, 4.5rem);
+}
+
+.tuition-overview {
+  background: radial-gradient(ellipse at 88% -35%, #7ed5fa49, transparent 64%), var(--glass-bg-strong);
+}
+
+.auth-card {
+  position: relative;
+  box-shadow: var(--strong-shadow), inset 1px 0 0 #e7f6ff53, inset -1px 0 0 #87c4eb55;
+}
+
+.auth-card.login-card::before {
+  content: '';
+  display: block;
+  pointer-events: none;
+  position: absolute;
+  inset: 0 12% auto;
+  height: 1px;
+  background: linear-gradient(90deg, transparent, #b5e6ff, transparent);
+}
+
+.dark :is(input, select, textarea):not([type="range"], [type="checkbox"], [type="radio"]) {
+  background-color: #0d2237;
+}
+
+.glass-dialog-panel {
+  max-height: calc(100dvh - max(2rem, env(safe-area-inset-top, 0px) + env(safe-area-inset-bottom, 0px) + 1rem));
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
+
+.glass-dialog-panel::backdrop { background: var(--dialog-shade); }
+
+.theme-switching * { transition: none !important; }
+
+body:has(dialog[open], [aria-modal="true"]) { overflow: hidden; }
+
+.attendance-deck { overflow-x: clip; }
+
+.attendance-card {
+  touch-action: pan-y pinch-zoom;
+  animation: card-appear 140ms ease-out both;
+}
+
+.swipe-hint {
+  pointer-events: none;
+  opacity: 0;
+  transition: opacity 95ms ease-out;
+  z-index: 1;
+}
+
+.attendance-card[data-swipe="present"] .swipe-hint-present,
+.attendance-card[data-swipe="absent"] .swipe-hint-absent { opacity: 1; }
+
+@keyframes card-appear {
+  from { opacity: .62; }
+  to { opacity: 1; }
+}
+
+@media (max-width: 1023px) {
+  .app-content { padding-bottom: calc(var(--dock-space) + 1rem); }
+  .app-bottom-notice { bottom: calc(var(--dock-space) + .75rem); }
+  .app-content [role="dialog"] { padding-top: max(1rem, env(safe-area-inset-top, 0px)); }
+}
+
+@media (pointer: coarse) {
+  .attendance-shortcuts { display: none; }
+
+  input:not([type="checkbox"], [type="range"], [type="radio"]), select, textarea {
+    font-size: max(1rem, 16px);
+  }
 }
 
 @media (prefers-reduced-motion: reduce) {

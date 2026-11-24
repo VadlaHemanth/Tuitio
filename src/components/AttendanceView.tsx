@@ -1,6 +1,5 @@
 import { StudentName } from './StudentName';
-import React, { useCallback, useEffect, useMemo, useState } from 'react';
-import { motion, useMotionValue, useTransform } from 'motion/react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   Calendar,
   Check,
@@ -29,8 +28,9 @@ interface AttendanceViewProps {
     date: string;
     status: AttendanceStatus;
     actualArrivalTime?: string | null;
+    departureTime?: string | null;
     note?: string;
-  }) => Promise<void>;
+  }) => Promise<boolean>;
   onBulkMarkAbsent: (date: string, studentIds: string[]) => Promise<void>;
   onOpenStudent: (studentId: string) => void;
 }
@@ -39,9 +39,11 @@ type ViewTab = 'swipe' | 'list' | 'calendar';
 
 interface UndoEntry {
   studentId: string;
-  studentName: string;
   date: string;
   previousStatus: AttendanceStatus;
+  actualArrivalTime?: string | null;
+  departureTime?: string | null;
+  note?: string;
 }
 
 export const AttendanceView: React.FC<AttendanceViewProps> = ({
@@ -50,11 +52,15 @@ export const AttendanceView: React.FC<AttendanceViewProps> = ({
   onBulkMarkAbsent,
   onOpenStudent,
 }) => {
-  const [selectedDate, setSelectedDate] = useState(workspace.todayIst);
+  const [dateOverride, setDateOverride] = useState<string | null>(null);
+  const selectedDate = dateOverride ?? workspace.todayIst;
   const [mode, setMode] = useState<ViewTab>('swipe');
   const [undoStack, setUndoStack] = useState<UndoEntry[]>([]);
   const [confirmEndSession, setConfirmEndSession] = useState(false);
   const [busy, setBusy] = useState(false);
+  const [bulkError, setBulkError] = useState('');
+  const lastUndo = undoStack.filter((entry) => entry.date === selectedDate).at(-1);
+  const undoStudent = workspace.students.find((student) => student.id === lastUndo?.studentId);
 
   const activeStudents = useMemo(
     () =>
@@ -101,58 +107,46 @@ export const AttendanceView: React.FC<AttendanceViewProps> = ({
   const recordStatus = useCallback(
     async (student: Student, status: AttendanceStatus) => {
       if (busy) return;
-      setBusy(true);
-      try {
-        const prev = attByStudent.get(student.id)?.status ?? 'unmarked';
-        setUndoStack((stk) => [
-          ...stk.slice(-14),
-          { studentId: student.id, studentName: student.fullName, date: selectedDate, previousStatus: prev },
-        ]);
-        if (typeof navigator !== 'undefined' && 'vibrate' in navigator) {
-          try {
-            navigator.vibrate(15);
-          } catch {
-            // ignore
-          }
-        }
-        const arrival =
-          status === 'present' || status === 'late'
-            ? formatIstTimeHHMM(new Date())
-            : null;
-        await onMarkAttendance({
-          studentId: student.id,
-          date: selectedDate,
-          status,
-          actualArrivalTime: arrival,
-        });
-      } finally {
-        setBusy(false);
-      }
+      const previous = attByStudent.get(student.id);
+      if (previous?.status === status) return;
+      const entry: UndoEntry = {
+        studentId: student.id,
+        date: selectedDate,
+        previousStatus: previous?.status ?? 'unmarked',
+        actualArrivalTime: previous?.actualArrivalTime ?? null,
+        departureTime: previous?.departureTime ?? null,
+        note: previous?.note ?? '',
+      };
+      setUndoStack((stack) => [...stack.slice(-29), entry]);
+      const markedPresent = status === 'present' || status === 'late';
+      const saved = await onMarkAttendance({
+        studentId: student.id,
+        date: selectedDate,
+        status,
+        actualArrivalTime: markedPresent
+          ? previous?.actualArrivalTime ?? (selectedDate === workspace.todayIst ? formatIstTimeHHMM() : null)
+          : null,
+      });
+      if (!saved) setUndoStack((stack) => stack.filter((item) => item !== entry));
     },
-    [attByStudent, busy, onMarkAttendance, selectedDate],
+    [attByStudent, busy, onMarkAttendance, selectedDate, workspace.todayIst],
   );
 
   const handleUndo = useCallback(async () => {
-    const last = undoStack[undoStack.length - 1];
-    if (!last || busy) return;
-    setBusy(true);
-    try {
-      setUndoStack((stk) => stk.slice(0, -1));
-      await onMarkAttendance({
-        studentId: last.studentId,
-        date: last.date,
-        status: last.previousStatus,
-      });
-    } finally {
-      setBusy(false);
-    }
-  }, [busy, onMarkAttendance, undoStack]);
+    if (!lastUndo || busy) return;
+    const { previousStatus, ...entry } = lastUndo;
+    setUndoStack((stack) => stack.filter((item) => item !== lastUndo));
+    const saved = await onMarkAttendance({ ...entry, status: previousStatus });
+    if (!saved) setUndoStack((stack) => [...stack, lastUndo]);
+  }, [busy, lastUndo, onMarkAttendance]);
 
   // Keyboard shortcuts on desktop when in Swipe mode
   useEffect(() => {
     if (mode !== 'swipe') return;
     const onKeyDown = (e: KeyboardEvent) => {
-      if (e.target instanceof HTMLInputElement || e.target instanceof HTMLTextAreaElement) return;
+      if (e.defaultPrevented || e.repeat || e.metaKey || e.ctrlKey || e.altKey || e.shiftKey ||
+        (e.target instanceof Element && e.target.closest('input, textarea, select, [contenteditable], [role="dialog"]')) ||
+        document.querySelector('[aria-modal="true"]')) return;
       const top = unmarkedStudents[0];
       if (e.key === 'ArrowRight' && top) {
         e.preventDefault();
@@ -163,14 +157,14 @@ export const AttendanceView: React.FC<AttendanceViewProps> = ({
       } else if (e.key === 'ArrowUp' && top) {
         e.preventDefault();
         void recordStatus(top, 'late');
-      } else if ((e.key === 'z' || e.key === 'Z') && undoStack.length > 0) {
+      } else if ((e.key === 'z' || e.key === 'Z') && lastUndo) {
         e.preventDefault();
         void handleUndo();
       }
     };
     window.addEventListener('keydown', onKeyDown);
     return () => window.removeEventListener('keydown', onKeyDown);
-  }, [handleUndo, mode, recordStatus, undoStack.length, unmarkedStudents]);
+  }, [handleUndo, lastUndo, mode, recordStatus, unmarkedStudents]);
 
   // Calendar 14-day recent grid
   const calendarDays = useMemo(() => {
@@ -190,7 +184,7 @@ export const AttendanceView: React.FC<AttendanceViewProps> = ({
         <div>
           <h1 className="text-2xl font-bold text-slate-950 dark:text-white">Attendance</h1>
           <p className="text-xs text-slate-500 dark:text-neutral-400 mt-0.5">
-            Swipe right for Present · Swipe left for Absent · Unmarked students are never auto-marked absent without confirmation
+            Swipe right for present. Swipe left for absent.
           </p>
         </div>
 
@@ -199,7 +193,7 @@ export const AttendanceView: React.FC<AttendanceViewProps> = ({
             type="date"
             aria-label="Attendance date"
             value={selectedDate}
-            onChange={(e) => setSelectedDate(e.target.value)}
+            onChange={(e) => setDateOverride(e.target.value && e.target.value !== workspace.todayIst ? e.target.value : null)}
             className="px-3 py-2 rounded-xl liquid-glass text-xs font-mono text-slate-900 dark:text-white focus:outline-none"
           />
 
@@ -219,7 +213,7 @@ export const AttendanceView: React.FC<AttendanceViewProps> = ({
                   onClick={() => setMode(t.id)}
                   className={`inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold transition-colors whitespace-nowrap ${
                     mode === t.id
-                      ? 'bg-sky-600 text-white dark:bg-white dark:text-black'
+                      ? 'glass-primary text-white'
                       : 'text-slate-600 dark:text-neutral-400 hover:text-slate-900 dark:hover:text-white'
                   }`}
                 >
@@ -245,18 +239,19 @@ export const AttendanceView: React.FC<AttendanceViewProps> = ({
         <div className="flex items-center gap-2">
           <button
             type="button"
-            disabled={undoStack.length === 0 || busy}
+            disabled={!lastUndo || busy}
             onClick={handleUndo}
             className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium border border-sky-200 dark:border-white/20 text-slate-700 dark:text-neutral-200 disabled:opacity-40 hover:bg-white dark:hover:bg-white/10 whitespace-nowrap"
           >
             <RotateCcw className="w-3.5 h-3.5" />
-            <span>Undo{undoStack.length > 0 ? ` (${undoStack[undoStack.length - 1].studentName.split(' ')[0]})` : ''}</span>
+            <span>Undo{undoStudent ? ` (${undoStudent.nickname || undoStudent.fullName.split(' ')[0]})` : ''}</span>
           </button>
 
           {stats.unmarked > 0 && (
             <button
               type="button"
-              onClick={() => setConfirmEndSession(true)}
+              disabled={busy}
+              onClick={() => { setBulkError(''); setConfirmEndSession(true); }}
               className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium border border-rose-200 dark:border-white/25 text-rose-700 dark:text-neutral-200 hover:bg-rose-50 dark:hover:bg-white/10 whitespace-nowrap"
             >
               <ShieldAlert className="w-3.5 h-3.5" />
@@ -280,6 +275,7 @@ export const AttendanceView: React.FC<AttendanceViewProps> = ({
           <div className="flex items-center gap-2">
             <button
               type="button"
+              disabled={busy}
               onClick={() => setConfirmEndSession(false)}
               className="px-3.5 py-2 rounded-xl text-xs font-medium border border-sky-200 dark:border-white/20 text-slate-700 dark:text-neutral-300"
             >
@@ -287,22 +283,32 @@ export const AttendanceView: React.FC<AttendanceViewProps> = ({
             </button>
             <button
               type="button"
+              disabled={busy}
               onClick={async () => {
-                setConfirmEndSession(false);
-                await onBulkMarkAbsent(selectedDate, unmarkedStudents.map((s) => s.id));
+                setBusy(true);
+                setBulkError('');
+                try {
+                  if (unmarkedStudents.length) await onBulkMarkAbsent(selectedDate, unmarkedStudents.map((s) => s.id));
+                  setConfirmEndSession(false);
+                } catch (error) {
+                  setBulkError(error instanceof Error ? error.message : 'Unable to mark attendance.');
+                } finally {
+                  setBusy(false);
+                }
               }}
               className="px-3.5 py-2 rounded-xl text-xs font-semibold bg-rose-600 dark:bg-white text-white dark:text-black"
             >
-              Confirm Mark Absent
+              {busy ? 'Saving…' : 'Confirm Mark Absent'}
             </button>
           </div>
         </div>
       )}
+      {bulkError && confirmEndSession && <p role="alert" className="text-sm text-rose-700 dark:text-rose-200">{bulkError}</p>}
 
       {/* MODE 1: SUPER-FAST SWIPE ATTENDANCE */}
       {mode === 'swipe' && (
         <div className="grid lg:grid-cols-12 gap-6 items-start">
-          <div className="lg:col-span-7 flex flex-col items-center">
+          <div className="attendance-deck lg:col-span-7 flex min-w-0 flex-col items-center">
             {currentCard ? (
               <SwipeAttendanceCard
                 key={`${currentCard.id}-${selectedDate}`}
@@ -310,6 +316,7 @@ export const AttendanceView: React.FC<AttendanceViewProps> = ({
                 workspace={workspace}
                 selectedDate={selectedDate}
                 remainingCount={unmarkedStudents.length}
+                disabled={busy}
                 onDecide={(status) => recordStatus(currentCard, status)}
                 onOpenStudent={onOpenStudent}
               />
@@ -325,7 +332,7 @@ export const AttendanceView: React.FC<AttendanceViewProps> = ({
                   {stats.present} present · {stats.late} late · {stats.absent} absent · {stats.excused} excused. Switch to List mode anytime to edit individual records.
                 </p>
                 <div className="flex justify-center gap-2 pt-1">
-                  {undoStack.length > 0 && (
+                  {lastUndo && (
                     <button
                       type="button"
                       onClick={handleUndo}
@@ -337,7 +344,7 @@ export const AttendanceView: React.FC<AttendanceViewProps> = ({
                   <button
                     type="button"
                     onClick={() => setMode('list')}
-                    className="px-4 py-2 rounded-xl text-xs font-semibold bg-sky-600 dark:bg-white text-white dark:text-black"
+                    className="px-4 py-2 rounded-xl text-xs font-semibold glass-primary text-white"
                   >
                     Review Full List
                   </button>
@@ -345,7 +352,7 @@ export const AttendanceView: React.FC<AttendanceViewProps> = ({
               </div>
             )}
 
-            <p className="text-xs text-slate-500 dark:text-neutral-500 mt-4 text-center">
+            <p className="attendance-shortcuts text-xs text-slate-500 dark:text-neutral-500 mt-4 text-center">
               Desktop shortcuts: <span className="font-mono">→</span> Present · <span className="font-mono">←</span> Absent · <span className="font-mono">↑</span> Late · <span className="font-mono">Z</span> Undo
             </p>
           </div>
@@ -353,7 +360,7 @@ export const AttendanceView: React.FC<AttendanceViewProps> = ({
           {/* Right side queue & recently marked */}
           <div className="lg:col-span-5 liquid-glass rounded-3xl p-5 space-y-4">
             <h2 className="text-base font-bold text-slate-950 dark:text-white">
-              Today’s Attendance Roll ({stats.total - stats.unmarked}/{stats.total})
+              Attendance Roll ({stats.total - stats.unmarked}/{stats.total})
             </h2>
             <div className="divide-y divide-sky-100/80 dark:divide-white/10 max-h-[430px] overflow-y-auto">
               {activeStudents.map((s) => {
@@ -475,7 +482,7 @@ export const AttendanceView: React.FC<AttendanceViewProps> = ({
                             onClick={() => recordStatus(s, opt)}
                             className={`px-2.5 py-1.5 rounded-lg text-xs font-medium capitalize transition-colors ${
                               status === opt
-                                ? 'bg-sky-600 text-white dark:bg-white dark:text-black'
+                                ? 'glass-primary text-white'
                                 : 'border border-sky-200/80 dark:border-white/15 text-slate-700 dark:text-neutral-300 hover:bg-sky-50 dark:hover:bg-white/10'
                             }`}
                           >
@@ -567,7 +574,8 @@ interface SwipeCardProps {
   workspace: WorkspaceSnapshot;
   selectedDate: string;
   remainingCount: number;
-  onDecide: (status: AttendanceStatus) => void;
+  disabled: boolean;
+  onDecide: (status: AttendanceStatus) => Promise<void>;
   onOpenStudent: (id: string) => void;
 }
 
@@ -576,13 +584,98 @@ const SwipeAttendanceCard: React.FC<SwipeCardProps> = ({
   workspace,
   selectedDate,
   remainingCount,
+  disabled,
   onDecide,
   onOpenStudent,
 }) => {
-  const x = useMotionValue(0);
-  const rotate = useTransform(x, [-220, 0, 220], [-10, 0, 10]);
-  const presentOpacity = useTransform(x, [30, 110], [0, 1]);
-  const absentOpacity = useTransform(x, [-110, -30], [1, 0]);
+  const card = useRef<HTMLDivElement>(null);
+  const frame = useRef(0);
+  const settling = useRef<Animation | null>(null);
+  const deciding = useRef(false);
+  const dragged = useRef(false);
+  const gesture = useRef<{ id: number; x: number; y: number; time: number; width: number; offset: number } | null>(null);
+
+  useEffect(() => () => cancelAnimationFrame(frame.current), []);
+
+  const cardTransform = (offset: number) =>
+    `translate3d(${offset}px, 0, 0) rotate(${Math.max(-9, Math.min(9, offset * 0.045))}deg)`;
+
+  const settle = (offset: number, direction: number, status?: AttendanceStatus) => {
+    const element = card.current;
+    cancelAnimationFrame(frame.current);
+    if (!element) return;
+    const reduce = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+    const end = direction ? direction * (element.clientWidth + 28) : 0;
+    element.style.transform = '';
+    delete element.dataset.swipe;
+    const finish = async () => {
+      if (!status) return;
+      await onDecide(status);
+      deciding.current = false;
+    };
+    if (reduce || typeof element.animate !== 'function' || (!offset && !direction)) {
+      void finish();
+      return;
+    }
+    const animation = element.animate([
+      { transform: cardTransform(offset), opacity: 1 },
+      { transform: cardTransform(end), opacity: direction ? 0 : 1 },
+    ], { duration: direction ? 140 : 150, easing: 'cubic-bezier(.2,.75,.22,1)', fill: direction ? 'forwards' : 'none' });
+    settling.current = animation;
+    void animation.finished.then(finish, finish).finally(() => animation.cancel());
+  };
+
+  const decide = (status: AttendanceStatus, offset = 0) => {
+    if (disabled || deciding.current) return;
+    deciding.current = true;
+    const direction = status === 'present' ? 1 : status === 'absent' ? -1 : 0;
+    settle(offset, direction, status);
+  };
+
+  const startDrag = (event: React.PointerEvent<HTMLDivElement>) => {
+    if (!event.isPrimary || event.button !== 0 || disabled || deciding.current) return;
+    settling.current?.cancel();
+    dragged.current = false;
+    gesture.current = { id: event.pointerId, x: event.clientX, y: event.clientY,
+      time: event.timeStamp, width: event.currentTarget.clientWidth, offset: 0 };
+  };
+
+  const moveDrag = (event: React.PointerEvent<HTMLDivElement>) => {
+    const active = gesture.current;
+    if (!active || active.id !== event.pointerId || deciding.current) return;
+    const offset = event.clientX - active.x;
+    const vertical = Math.abs(event.clientY - active.y);
+    if (!dragged.current) {
+      if (vertical > 9 && vertical > Math.abs(offset)) { gesture.current = null; return; }
+      if (Math.abs(offset) < 8 || Math.abs(offset) <= vertical) return;
+      dragged.current = true;
+      event.currentTarget.setPointerCapture(event.pointerId);
+    }
+    active.offset = offset;
+    cancelAnimationFrame(frame.current);
+    const element = event.currentTarget;
+    frame.current = requestAnimationFrame(() => {
+      element.style.transform = cardTransform(offset);
+      const hint = offset > 36 ? 'present' : offset < -36 ? 'absent' : '';
+      if (element.dataset.swipe !== hint) element.dataset.swipe = hint;
+    });
+  };
+
+  const endDrag = (event: React.PointerEvent<HTMLDivElement>) => {
+    const active = gesture.current;
+    if (!active || active.id !== event.pointerId) return;
+    gesture.current = null;
+    if (!dragged.current) return;
+    const cancelled = event.type !== 'pointerup';
+    const offset = cancelled ? active.offset : event.clientX - active.x;
+    const distance = Math.abs(offset);
+    const flick = distance >= 40 && distance / Math.max(1, event.timeStamp - active.time) > 0.5;
+    if (!cancelled && !disabled && (distance >= Math.min(96, active.width * 0.24) || flick)) {
+      decide(offset > 0 ? 'present' : 'absent', offset);
+    } else {
+      settle(offset, 0);
+    }
+  };
 
   const pendingHwCount = workspace.homework.filter(
     (h) => h.studentId === student.id && h.status !== 'completed' && h.status !== 'verified',
@@ -609,41 +702,43 @@ const SwipeAttendanceCard: React.FC<SwipeCardProps> = ({
 
   return (
     <div className="w-full max-w-md space-y-4">
-      <motion.div
-        style={{ x, rotate }}
-        drag="x"
-        dragConstraints={{ left: 0, right: 0 }}
-        dragElastic={0.85}
-        onDragEnd={(_e, info) => {
-          if (info.offset.x > 105 || info.velocity.x > 500) {
-            onDecide('present');
-          } else if (info.offset.x < -105 || info.velocity.x < -500) {
-            onDecide('absent');
-          }
+      <div
+        ref={card}
+        onPointerDown={startDrag}
+        onPointerMove={moveDrag}
+        onPointerUp={endDrag}
+        onPointerCancel={endDrag}
+        onLostPointerCapture={(event) => {
+          if (event.target === event.currentTarget) endDrag(event);
         }}
-        className="relative liquid-glass-strong rounded-3xl p-6 cursor-grab active:cursor-grabbing select-none touch-pan-y"
+        onPointerLeave={(event) => {
+          if (!dragged.current && event.pointerType === 'mouse') gesture.current = null;
+        }}
+        onClickCapture={(event) => {
+          if (event.detail && (dragged.current || deciding.current)) event.stopPropagation();
+        }}
+        className="attendance-card relative liquid-glass-strong rounded-3xl p-5 sm:p-6 cursor-grab active:cursor-grabbing select-none"
       >
-        {/* Directional Swipe Feedback Overlays */}
-        <motion.div
-          style={{ opacity: presentOpacity }}
-          className="pointer-events-none absolute top-5 right-5 px-3 py-1 rounded-lg border-2 border-emerald-600 dark:border-white text-emerald-700 dark:text-white font-display font-bold text-xs tracking-wider"
+        <div
+          aria-hidden="true"
+          className="swipe-hint swipe-hint-present absolute top-4 right-4 bg-emerald-50 dark:bg-emerald-950 px-3 py-1 rounded-lg border border-emerald-600 text-emerald-800 dark:text-emerald-200 font-display font-bold text-xs"
         >
           PRESENT
-        </motion.div>
-        <motion.div
-          style={{ opacity: absentOpacity }}
-          className="pointer-events-none absolute top-5 left-5 px-3 py-1 rounded-lg border-2 border-rose-600 dark:border-neutral-400 text-rose-700 dark:text-neutral-300 font-display font-bold text-xs tracking-wider"
+        </div>
+        <div
+          aria-hidden="true"
+          className="swipe-hint swipe-hint-absent absolute top-4 left-4 bg-rose-50 dark:bg-rose-950 px-3 py-1 rounded-lg border border-rose-600 text-rose-800 dark:text-rose-200 font-display font-bold text-xs"
         >
           ABSENT
-        </motion.div>
+        </div>
 
         <div className="flex items-center justify-between text-xs text-slate-500 dark:text-neutral-400 mb-5">
-          <span>Card 1 of {remainingCount} unmarked</span>
+          <span>{remainingCount} unmarked</span>
           <span className="font-mono tabular-nums">{student.studentCode}</span>
         </div>
 
         <div className="flex items-center gap-4">
-          <div className="w-16 h-16 rounded-2xl bg-sky-600 dark:bg-white text-white dark:text-black flex items-center justify-center font-display font-bold text-xl shrink-0">
+          <div className="w-16 h-16 rounded-2xl glass-primary text-white flex items-center justify-center font-display font-bold text-xl shrink-0">
             {initials}
           </div>
           <div className="min-w-0">
@@ -708,13 +803,14 @@ const SwipeAttendanceCard: React.FC<SwipeCardProps> = ({
             </p>
           </div>
         </div>
-      </motion.div>
+      </div>
 
       {/* Tactile Action Controls (Large Touch Targets >= 48px) */}
       <div className="grid grid-cols-4 gap-2.5">
         <button
           type="button"
-          onClick={() => onDecide('absent')}
+          disabled={disabled}
+          onClick={() => decide('absent')}
           className="min-h-[52px] rounded-2xl border border-rose-200 dark:border-white/20 bg-white/80 dark:bg-neutral-950 hover:bg-rose-50 dark:hover:bg-neutral-900 text-rose-700 dark:text-neutral-200 flex flex-col items-center justify-center gap-0.5 text-xs font-semibold transition-transform active:scale-95"
         >
           <UserX className="w-4 h-4" />
@@ -723,7 +819,8 @@ const SwipeAttendanceCard: React.FC<SwipeCardProps> = ({
 
         <button
           type="button"
-          onClick={() => onDecide('excused')}
+          disabled={disabled}
+          onClick={() => decide('excused')}
           className="min-h-[52px] rounded-2xl border border-sky-200/80 dark:border-white/15 bg-white/80 dark:bg-neutral-950 hover:bg-sky-50 dark:hover:bg-neutral-900 text-slate-700 dark:text-neutral-300 flex flex-col items-center justify-center gap-0.5 text-xs font-medium transition-transform active:scale-95"
         >
           <X className="w-4 h-4" />
@@ -732,7 +829,8 @@ const SwipeAttendanceCard: React.FC<SwipeCardProps> = ({
 
         <button
           type="button"
-          onClick={() => onDecide('late')}
+          disabled={disabled}
+          onClick={() => decide('late')}
           className="min-h-[52px] rounded-2xl border border-amber-200 dark:border-white/20 bg-white/80 dark:bg-neutral-950 hover:bg-amber-50 dark:hover:bg-neutral-900 text-amber-800 dark:text-neutral-200 flex flex-col items-center justify-center gap-0.5 text-xs font-semibold transition-transform active:scale-95"
         >
           <Clock className="w-4 h-4" />
@@ -741,8 +839,9 @@ const SwipeAttendanceCard: React.FC<SwipeCardProps> = ({
 
         <button
           type="button"
-          onClick={() => onDecide('present')}
-          className="min-h-[52px] rounded-2xl bg-sky-600 hover:bg-sky-700 dark:bg-white dark:hover:bg-neutral-200 text-white dark:text-black flex flex-col items-center justify-center gap-0.5 text-xs font-semibold transition-transform active:scale-95"
+          disabled={disabled}
+          onClick={() => decide('present')}
+          className="min-h-[52px] rounded-2xl glass-primary text-white flex flex-col items-center justify-center gap-0.5 text-xs font-semibold transition-transform active:scale-95"
         >
           <UserCheck className="w-4 h-4" />
           <span>Present</span>

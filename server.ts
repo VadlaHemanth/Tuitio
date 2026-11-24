@@ -4,6 +4,8 @@ import express from 'express';
 import { createServer as createViteServer } from 'vite';
 import { z } from 'zod';
 import { billingMonthSchema, invoiceAdjustment, invoicePatchSchema, mapBillingInvoice, paymentReceiptColumns, paymentSchema, paymentStatements, type PaymentReceipt } from './server/billing';
+import { attendanceDeleteSql, attendanceSchema, attendanceUpsert, bulkAttendanceSchema, mapAttendance } from './server/attendance';
+import { examCreateSchema, examInsert, examPatchSchema, examUpdate, homeworkAssignment, homeworkCarryForward, homeworkCreateSchema, homeworkPatchSchema } from './server/classwork';
 import { studentCreateSchema, studentPatchSchema } from './server/studentPayload';
 import {
   clearDemoWorkspace,
@@ -585,160 +587,48 @@ async function startServer() {
   });
 
   // --- ATTENDANCE ---
-  const attSchema = z.object({
-    studentId: z.string().min(1),
-    date: z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
-    status: z.enum(['unmarked', 'present', 'absent', 'late', 'excused']),
-    actualArrivalTime: z.string().nullable().optional(),
-    departureTime: z.string().nullable().optional(),
-    note: z.string().max(300).optional(),
-  });
-
   app.post('/api/attendance', (req, res) => {
-    const parsed = attSchema.safeParse(req.body);
-    if (!parsed.success) return res.status(400).json({ error: 'Invalid attendance data.' });
-    const d = parsed.data;
-    const now = new Date().toISOString();
-
-    if (d.status === 'unmarked') {
-      db.prepare('DELETE FROM attendance WHERE student_id = ? AND date = ?').run(d.studentId, d.date);
+    const parsed = attendanceSchema.safeParse(req.body);
+    if (!parsed.success) return res.status(400).json({ error: 'Invalid attendance details.' });
+    const entry = parsed.data;
+    let attendance = null;
+    if (entry.status === 'unmarked') {
+      db.prepare(attendanceDeleteSql).run(entry.studentId, entry.date);
     } else {
-      const id = generateId('att');
-      db.prepare(`
-        INSERT INTO attendance (id, student_id, date, status, actual_arrival_time, departure_time, note, is_demo, updated_at)
-        VALUES (?, ?, ?, ?, ?, ?, ?, 0, ?)
-        ON CONFLICT(student_id, date) DO UPDATE SET
-          status = excluded.status,
-          actual_arrival_time = COALESCE(excluded.actual_arrival_time, attendance.actual_arrival_time),
-          departure_time = COALESCE(excluded.departure_time, attendance.departure_time),
-          note = excluded.note,
-          updated_at = excluded.updated_at
-      `).run(
-        id,
-        d.studentId,
-        d.date,
-        d.status,
-        d.actualArrivalTime ?? null,
-        d.departureTime ?? null,
-        d.note ?? '',
-        now,
-      );
+      const { sql, values } = attendanceUpsert(entry, generateId('att'), new Date().toISOString());
+      const row = db.prepare(sql + ' RETURNING *').get(...values);
+      if (row) attendance = mapAttendance(row);
     }
-    res.json(getWorkspaceSnapshot());
+    res.json(req.query.response === 'record' ? { attendance } : getWorkspaceSnapshot());
   });
 
   app.post('/api/attendance/bulk', (req, res) => {
-    const schema = z.object({
-      date: z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
-      entries: z.array(
-        z.object({
-          studentId: z.string().min(1),
-          status: z.enum(['present', 'absent', 'late', 'excused']),
-          actualArrivalTime: z.string().nullable().optional(),
-          note: z.string().optional(),
-        }),
-      ),
-    });
-    const parsed = schema.safeParse(req.body);
-    if (!parsed.success) return res.status(400).json({ error: 'Invalid bulk attendance payload.' });
+    const parsed = bulkAttendanceSchema.safeParse(req.body);
+    if (!parsed.success) return res.status(400).json({ error: 'Invalid bulk attendance details.' });
+    const { date, entries } = parsed.data;
     const now = new Date().toISOString();
-    const stmt = db.prepare(`
-      INSERT INTO attendance (id, student_id, date, status, actual_arrival_time, note, is_demo, updated_at)
-      VALUES (?, ?, ?, ?, ?, ?, 0, ?)
-      ON CONFLICT(student_id, date) DO UPDATE SET
-        status = excluded.status,
-        actual_arrival_time = COALESCE(excluded.actual_arrival_time, attendance.actual_arrival_time),
-        note = excluded.note,
-        updated_at = excluded.updated_at
-    `);
-    for (const e of parsed.data.entries) {
-      stmt.run(generateId('att'), e.studentId, parsed.data.date, e.status, e.actualArrivalTime ?? null, e.note ?? '', now);
-    }
-    logAudit('BULK_ATTENDANCE', 'attendance', parsed.data.date, `Updated ${parsed.data.entries.length} attendance entries`);
+    runLocalBillingBatch(entries.map((entry) => attendanceUpsert({ ...entry, date }, generateId('att'), now)));
+    logAudit('BULK_ATTENDANCE', 'attendance', date, `Marked attendance for ${entries.length} students`);
     res.json(getWorkspaceSnapshot());
   });
 
-  // --- HOMEWORK & TEMPLATES ---
-  const hwCreateSchema = z.object({
-    studentIds: z.array(z.string().min(1)).min(1),
-    subject: z.string().trim().min(1).max(60),
-    chapter: z.string().trim().max(100).default(''),
-    topic: z.string().trim().max(100).default(''),
-    title: z.string().trim().min(2).max(160),
-    instructions: z.string().max(600).default(''),
-    assignedDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional(),
-    dueDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
-    estimatedMinutes: z.number().int().min(5).max(180).default(20),
-    priority: z.enum(['urgent', 'high', 'normal', 'low']).default('normal'),
-    source: z.enum(['school', 'tuition']).default('tuition'),
-    saveAsTemplate: z.boolean().optional(),
-  });
-
+  // --- HOMEWORK ---
   app.post('/api/homework', (req, res) => {
-    const parsed = hwCreateSchema.safeParse(req.body);
-    if (!parsed.success) return res.status(400).json({ error: 'Invalid homework fields.' });
-    const d = parsed.data;
-    const now = new Date().toISOString();
-    const assigned = d.assignedDate || formatIstDate(new Date());
-
-    const stmt = db.prepare(`
-      INSERT INTO homework (
-        id, student_id, subject, chapter, topic, title, instructions, assigned_date, due_date,
-        estimated_minutes, priority, source, completion_pct, status, teacher_verified, needs_help, remarks, is_demo, updated_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, 'not_started', 0, 0, '', 0, ?)
-    `);
-
-    for (const sid of d.studentIds) {
-      // Guard against exact duplicate active assignment
-      const dup = db
-        .prepare(
-          "SELECT id FROM homework WHERE student_id = ? AND subject = ? AND title = ? AND due_date = ? AND status NOT IN ('completed','verified')",
-        )
-        .get(sid, d.subject, d.title, d.dueDate);
-      if (dup) continue;
-      stmt.run(
-        generateId('hw'),
-        sid,
-        d.subject,
-        d.chapter,
-        d.topic,
-        d.title,
-        d.instructions,
-        assigned,
-        d.dueDate,
-        d.estimatedMinutes,
-        d.priority,
-        d.source,
-        now,
-      );
-    }
-
-    if (d.saveAsTemplate) {
-      db.prepare(
-        'INSERT INTO homework_templates (id, title, subject, chapter, topic, instructions, estimated_minutes, source, class_level) VALUES (?, ?, ?, ?, ?, ?, ?, ?, NULL)',
-      ).run(generateId('tpl'), d.title, d.subject, d.chapter, d.topic, d.instructions, d.estimatedMinutes, d.source);
-    }
-
+    const parsed = homeworkCreateSchema.safeParse(req.body);
+    if (!parsed.success) return res.status(400).json({ error: 'Check the students, homework title and due date.' });
+    const now = new Date();
+    runLocalBillingBatch(homeworkAssignment(parsed.data, formatIstDate(now), now.toISOString(), () => generateId('hw')));
     res.status(201).json(getWorkspaceSnapshot());
   });
 
   app.put('/api/homework/:id', (req, res) => {
-    const schema = z.object({
-      status: z.enum(['not_started', 'in_progress', 'completed', 'verified', 'partial', 'overdue', 'carried_forward']).optional(),
-      completionPct: z.number().int().min(0).max(100).optional(),
-      teacherVerified: z.boolean().optional(),
-      needsHelp: z.boolean().optional(),
-      remarks: z.string().max(500).optional(),
-      dueDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional(),
-    });
-    const parsed = schema.safeParse(req.body);
+    const parsed = homeworkPatchSchema.safeParse(req.body);
     if (!parsed.success) return res.status(400).json({ error: 'Invalid homework update.' });
     const d = parsed.data;
     const now = new Date().toISOString();
-    const completedDate =
-      d.status === 'completed' || d.status === 'verified' ? formatIstDate(new Date()) : null;
+    const completed = d.status === 'completed' || d.status === 'verified';
 
-    db.prepare(`
+    const result = db.prepare(`
       UPDATE homework SET
         status = COALESCE(?, status),
         completion_pct = COALESCE(?, completion_pct),
@@ -746,7 +636,7 @@ async function startServer() {
         needs_help = COALESCE(?, needs_help),
         remarks = COALESCE(?, remarks),
         due_date = COALESCE(?, due_date),
-        completed_date = COALESCE(?, completed_date),
+        completed_date = CASE WHEN ? THEN COALESCE(completed_date, ?) WHEN ? THEN NULL ELSE completed_date END,
         updated_at = ?
       WHERE id = ?
     `).run(
@@ -756,10 +646,13 @@ async function startServer() {
       d.needsHelp !== undefined ? (d.needsHelp ? 1 : 0) : null,
       d.remarks ?? null,
       d.dueDate ?? null,
-      completedDate,
+      Number(completed),
+      formatIstDate(new Date()),
+      Number(d.status !== undefined),
       now,
       req.params.id,
     );
+    if (!result.changes) return res.status(404).json({ error: 'Homework not found.' });
     res.json(getWorkspaceSnapshot());
   });
 
@@ -778,122 +671,33 @@ async function startServer() {
       toDate,
     });
     const now = new Date().toISOString();
-    const stmt = db.prepare(`
-      INSERT INTO homework (
-        id, student_id, subject, chapter, topic, title, instructions, assigned_date, due_date,
-        estimated_minutes, priority, source, completion_pct, status, completed_date,
-        teacher_verified, needs_help, remarks, carried_from_id, is_demo, updated_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, 0, ?, ?, ?, ?, ?)
-    `);
-    for (const dr of drafts) {
-      stmt.run(
-        generateId('hw'),
-        dr.studentId,
-        dr.subject,
-        dr.chapter,
-        dr.topic,
-        dr.title,
-        dr.instructions,
-        dr.assignedDate,
-        dr.dueDate,
-        dr.estimatedMinutes,
-        dr.priority,
-        dr.source,
-        dr.completionPct,
-        dr.status,
-        dr.needsHelp ? 1 : 0,
-        dr.remarks,
-        dr.carriedFromId ?? null,
-        dr.isDemo ? 1 : 0,
-        now,
-      );
-    }
-    res.json({ carriedCount: drafts.length, snapshot: getWorkspaceSnapshot() });
+    const results = runLocalBillingBatch(drafts.map((draft) => homeworkCarryForward(draft, generateId('hw'), now)));
+    const carriedCount = results.reduce((count, changes) => count + changes, 0);
+    res.json({ carriedCount, snapshot: carriedCount ? getWorkspaceSnapshot() : snapshot });
   });
 
   // --- EXAMS ---
-  const examSchema = z.object({
-    studentId: z.string().min(1),
-    subject: z.string().trim().min(1).max(60),
-    examName: z.string().trim().min(2).max(120),
-    examType: z.enum(['school_exam', 'unit_test', 'weekly_test', 'revision_test', 'tuition_test']).default('unit_test'),
-    examDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
-    syllabus: z.string().max(400).default(''),
-    maxMarks: z.number().int().min(1).max(500).default(50),
-    obtainedMarks: z.number().min(0).max(500).nullable().optional(),
-    importantChapters: z.array(z.string()).default([]),
-    preparationStatus: z.number().int().min(0).max(100).default(25),
-    revisionPlan: z.string().max(500).default(''),
-    weakAreas: z.array(z.string()).default([]),
-  });
-
   app.post('/api/exams', (req, res) => {
-    const parsed = examSchema.safeParse(req.body);
-    if (!parsed.success) return res.status(400).json({ error: 'Invalid exam details.' });
-    const d = parsed.data;
-    const now = new Date().toISOString();
-    db.prepare(`
-      INSERT INTO exams (
-        id, student_id, subject, exam_name, exam_type, exam_date, syllabus, max_marks,
-        obtained_marks, important_chapters_json, preparation_status, revision_plan, weak_areas_json, is_demo, updated_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?)
-    `).run(
-      generateId('ex'),
-      d.studentId,
-      d.subject,
-      d.examName,
-      d.examType,
-      d.examDate,
-      d.syllabus,
-      d.maxMarks,
-      d.obtainedMarks ?? null,
-      JSON.stringify(d.importantChapters),
-      d.preparationStatus,
-      d.revisionPlan,
-      JSON.stringify(d.weakAreas),
-      now,
-    );
+    const parsed = examCreateSchema.safeParse(req.body);
+    if (!parsed.success) return res.status(400).json({ error: parsed.error.issues[0]?.message || 'Invalid exam details.' });
+    if (!db.prepare('SELECT id FROM students WHERE id = ?').get(parsed.data.studentId)) {
+      return res.status(404).json({ error: 'Student not found.' });
+    }
+    const { sql, values } = examInsert(parsed.data, generateId('ex'), new Date().toISOString());
+    db.prepare(sql).run(...values);
     res.status(201).json(getWorkspaceSnapshot());
   });
 
   app.put('/api/exams/:id', (req, res) => {
-    const parsed = examSchema.partial().safeParse(req.body);
-    if (!parsed.success) return res.status(400).json({ error: 'Invalid exam update.' });
-    const d = parsed.data;
-    const now = new Date().toISOString();
-    const existing = db.prepare('SELECT * FROM exams WHERE id = ?').get(req.params.id) as Record<string, unknown> | undefined;
-    if (!existing) return res.status(404).json({ error: 'Exam not found.' });
-
-    db.prepare(`
-      UPDATE exams SET
-        subject = COALESCE(?, subject),
-        exam_name = COALESCE(?, exam_name),
-        exam_type = COALESCE(?, exam_type),
-        exam_date = COALESCE(?, exam_date),
-        syllabus = COALESCE(?, syllabus),
-        max_marks = COALESCE(?, max_marks),
-        obtained_marks = ?,
-        important_chapters_json = COALESCE(?, important_chapters_json),
-        preparation_status = COALESCE(?, preparation_status),
-        revision_plan = COALESCE(?, revision_plan),
-        weak_areas_json = COALESCE(?, weak_areas_json),
-        updated_at = ?
-      WHERE id = ?
-    `).run(
-      d.subject ?? null,
-      d.examName ?? null,
-      d.examType ?? null,
-      d.examDate ?? null,
-      d.syllabus ?? null,
-      d.maxMarks ?? null,
-      d.obtainedMarks !== undefined ? d.obtainedMarks : (existing.obtained_marks as number | null),
-      d.importantChapters ? JSON.stringify(d.importantChapters) : null,
-      d.preparationStatus ?? null,
-      d.revisionPlan ?? null,
-      d.weakAreas ? JSON.stringify(d.weakAreas) : null,
-      now,
-      req.params.id,
-    );
+    const parsed = examPatchSchema.safeParse(req.body);
+    if (!parsed.success) return res.status(400).json({ error: parsed.error.issues[0]?.message || 'Invalid exam details.' });
+    const { sql, values } = examUpdate(parsed.data, req.params.id, new Date().toISOString());
+    if (!db.prepare(sql).run(...values).changes) {
+      if (!db.prepare('SELECT id FROM exams WHERE id = ?').get(req.params.id)) {
+        return res.status(404).json({ error: 'Exam not found.' });
+      }
+      return res.status(400).json({ error: 'Marks cannot exceed the maximum marks.' });
+    }
     res.json(getWorkspaceSnapshot());
   });
 

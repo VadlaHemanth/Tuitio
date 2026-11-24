@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useMemo, useState } from 'react';
+import React, { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   BarChart3,
   Bell,
@@ -11,7 +11,6 @@ import {
   Menu,
   Moon,
   Play,
-  Plus,
   Search,
   Settings,
   Smartphone,
@@ -22,7 +21,7 @@ import {
   X,
 } from 'lucide-react';
 import type {
-  AttendanceStatus,
+  AttendanceRecord,
   BoardType,
   ScheduleBlock,
   StudentStatus,
@@ -32,30 +31,45 @@ import type {
 import {
   apiRequest,
   cacheWorkspaceSnapshot,
+  clearCachedWorkspaceSnapshot,
   flushOfflineQueue,
   getOfflineQueue,
   loadCachedWorkspaceSnapshot,
+  OfflineQueuedError,
   setAuthToken,
 } from './lib/api';
 import { generateDailyTuitionPlan } from './engines/schedulerEngine';
-import { formatIstMonthKey } from './engines/istDate';
+import { formatIstDate } from './engines/istDate';
 import { useTheme } from './hooks/useTheme';
 import { useOnlineStatus, usePWAInstall } from './hooks/usePWAInstall';
 import { AuthOnboarding } from './components/AuthOnboarding';
 import { CommandPalette, type NavSection } from './components/CommandPalette';
 import { CommandCenter } from './components/CommandCenter';
 import { AttendanceView } from './components/AttendanceView';
-import { StudentsView } from './components/StudentsView';
-import { PlannerView } from './components/PlannerView';
-import { ExamsView, HomeworkView } from './components/HomeworkExamsView';
-import { FeesView } from './components/FeesView';
-import { NotificationsView, ReportsView, SettingsView } from './components/NotificationsReportsSettings';
+
+const StudentsView = lazy(() => import('./components/StudentsView').then((module) => ({ default: module.StudentsView })));
+const PlannerView = lazy(() => import('./components/PlannerView').then((module) => ({ default: module.PlannerView })));
+const HomeworkView = lazy(() => import('./components/HomeworkExamsView').then((module) => ({ default: module.HomeworkView })));
+const ExamsView = lazy(() => import('./components/HomeworkExamsView').then((module) => ({ default: module.ExamsView })));
+const FeesView = lazy(() => import('./components/FeesView').then((module) => ({ default: module.FeesView })));
+const NotificationsView = lazy(() => import('./components/NotificationsReportsSettings').then((module) => ({ default: module.NotificationsView })));
+const ReportsView = lazy(() => import('./components/NotificationsReportsSettings').then((module) => ({ default: module.ReportsView })));
+const SettingsView = lazy(() => import('./components/NotificationsReportsSettings').then((module) => ({ default: module.SettingsView })));
 
 interface AuthState {
   loading: boolean;
   initialized: boolean;
   authenticated: boolean;
   teacher: { id: string; email: string; name: string } | null;
+}
+
+type AttendanceEdit = Pick<AttendanceRecord, 'studentId' | 'date' | 'status' | 'actualArrivalTime' | 'departureTime' | 'note'>;
+
+function applyAttendance(records: AttendanceRecord[], edit: AttendanceEdit, record?: AttendanceRecord | null) {
+  const existing = records.find((item) => item.studentId === edit.studentId && item.date === edit.date);
+  const rest = records.filter((item) => item !== existing);
+  if (edit.status === 'unmarked') return rest;
+  return [record ?? { id: `pending:${edit.studentId}:${edit.date}`, updatedAt: '', ...existing, ...edit }, ...rest];
 }
 
 const NAV_ITEMS: { id: NavSection; label: string; icon: React.ComponentType<{ className?: string }> }[] = [
@@ -78,7 +92,21 @@ export default function App() {
     authenticated: false,
     teacher: null,
   });
-  const [workspace, setWorkspace] = useState<WorkspaceSnapshot | null>(null);
+  const [authError, setAuthError] = useState<string | null>(null);
+  const [authAttempt, setAuthAttempt] = useState(0);
+  const [savedWorkspace, setWorkspace] = useState<WorkspaceSnapshot | null>(null);
+  const [workspaceError, setWorkspaceError] = useState<string | null>(null);
+  const [attendanceEdits, setAttendanceEdits] = useState<AttendanceEdit[]>([]);
+  const attendanceWrites = useRef(Promise.resolve());
+  const workspace = useMemo(() => {
+    if (!savedWorkspace) return savedWorkspace;
+    const superseded = new Set(savedWorkspace.homework.map((task) => task.carriedFromId).filter(Boolean));
+    return {
+      ...savedWorkspace,
+      homework: superseded.size ? savedWorkspace.homework.filter((task) => !superseded.has(task.id)) : savedWorkspace.homework,
+      attendance: attendanceEdits.reduce((records, edit) => applyAttendance(records, edit), savedWorkspace.attendance),
+    };
+  }, [savedWorkspace, attendanceEdits]);
   const [section, setSection] = useState<NavSection>(() => new URLSearchParams(window.location.search).get('view') === 'notifications' ? 'notifications' : 'dashboard');
   const [selectedStudentId, setSelectedStudentId] = useState<string | null>(null);
   const [feePaymentStudentId, setFeePaymentStudentId] = useState<string | null>(null);
@@ -89,9 +117,20 @@ export default function App() {
   const [toast, setToast] = useState<string | null>(null);
   const [pendingOfflineCount, setPendingOfflineCount] = useState(() => getOfflineQueue().length);
 
-  const { preference: theme, setPreference: setTheme, resolvedTheme } = useTheme('light');
+  const { preference: theme, setPreference: setTheme, resolvedTheme } = useTheme('system');
   const isOnline = useOnlineStatus();
   const { isInstallable, isInstalled, install } = usePWAInstall();
+
+  useEffect(() => {
+    window.scrollTo(0, 0);
+  }, [section, selectedStudentId, liveMode]);
+
+  useEffect(() => {
+    if (!mobileMoreOpen) return;
+    const closeOnEscape = (event: KeyboardEvent) => { if (event.key === 'Escape') setMobileMoreOpen(false); };
+    document.addEventListener('keydown', closeOnEscape);
+    return () => document.removeEventListener('keydown', closeOnEscape);
+  }, [mobileMoreOpen]);
 
   const showToast = useCallback((msg: string) => {
     setToast(msg);
@@ -100,31 +139,30 @@ export default function App() {
     }, 3200);
   }, []);
 
-  const safeSetWorkspace = useCallback((res: unknown) => {
-    if (!res || typeof res !== 'object') return;
-    const snap =
-      'snapshot' in res && (res as any).snapshot && typeof (res as any).snapshot === 'object'
-        ? (res as any).snapshot
-        : (res as WorkspaceSnapshot);
-    if (snap && Array.isArray(snap.students)) {
-      setWorkspace(snap);
-      cacheWorkspaceSnapshot(snap);
+  const safeSetWorkspace = useCallback((response: unknown) => {
+    if (!response || typeof response !== 'object') throw new Error('The server returned an invalid workspace.');
+    const snapshot = ('snapshot' in response ? response.snapshot : response) as WorkspaceSnapshot | null;
+    if (!snapshot || !Array.isArray(snapshot.students) || !Array.isArray(snapshot.homework) || !Array.isArray(snapshot.attendance)) {
+      throw new Error('The server returned an invalid workspace.');
     }
+    setWorkspace(snapshot);
+    cacheWorkspaceSnapshot(snapshot);
   }, []);
 
   const loadWorkspace = useCallback(async () => {
+    setWorkspaceError(null);
     try {
-      const snap = await apiRequest<WorkspaceSnapshot>('/api/workspace');
-      setWorkspace(snap);
-      cacheWorkspaceSnapshot(snap);
-    } catch {
+      safeSetWorkspace(await apiRequest('/api/workspace'));
+    } catch (error) {
       const cached = loadCachedWorkspaceSnapshot();
       if (cached) {
         setWorkspace(cached);
         showToast('Showing cached offline workspace data.');
+      } else {
+        setWorkspaceError(error instanceof Error ? error.message : 'Unable to load the workspace.');
       }
     }
-  }, [showToast]);
+  }, [safeSetWorkspace, showToast]);
 
   // Initial auth check + ?autostart=1 support for uninitialized first launch
   useEffect(() => {
@@ -168,15 +206,16 @@ export default function App() {
         if (status.authenticated) {
           await loadWorkspace();
         }
-      } catch {
+      } catch (error) {
         if (!active) return;
+        setAuthError(error instanceof Error ? error.message : 'Unable to reach Tuitio.');
         setAuth({ loading: false, initialized: false, authenticated: false, teacher: null });
       }
     })();
     return () => {
       active = false;
     };
-  }, [loadWorkspace]);
+  }, [authAttempt, loadWorkspace]);
 
   // Flush queued offline attendance/homework updates when reconnecting
   useEffect(() => {
@@ -187,24 +226,24 @@ export default function App() {
           showToast(`Synced ${res.synced} offline update${res.synced === 1 ? '' : 's'}.`);
           void loadWorkspace();
         }
-      });
+      }).catch(() => showToast('Offline updates could not sync.'));
     }
   }, [isOnline, auth.authenticated, loadWorkspace, showToast]);
 
-  const loadedMonth = workspace?.currentMonthIst;
+  const loadedDate = workspace?.todayIst;
   useEffect(() => {
-    if (!loadedMonth || !auth.authenticated || !isOnline) return;
-    const refreshBillingMonth = () => {
-      if (!document.hidden && formatIstMonthKey() !== loadedMonth) void loadWorkspace();
+    if (!loadedDate || !auth.authenticated || !isOnline) return;
+    const refreshWorkspaceDate = () => {
+      if (!document.hidden && formatIstDate() !== loadedDate) void loadWorkspace();
     };
-    refreshBillingMonth();
-    const interval = window.setInterval(refreshBillingMonth, 60_000);
-    document.addEventListener('visibilitychange', refreshBillingMonth);
+    refreshWorkspaceDate();
+    const interval = window.setInterval(refreshWorkspaceDate, 60_000);
+    document.addEventListener('visibilitychange', refreshWorkspaceDate);
     return () => {
       window.clearInterval(interval);
-      document.removeEventListener('visibilitychange', refreshBillingMonth);
+      document.removeEventListener('visibilitychange', refreshWorkspaceDate);
     };
-  }, [auth.authenticated, isOnline, loadedMonth, loadWorkspace]);
+  }, [auth.authenticated, isOnline, loadedDate, loadWorkspace]);
 
   // Cmd/Ctrl + K Command Palette shortcut
   useEffect(() => {
@@ -266,49 +305,61 @@ export default function App() {
   };
 
   const handleLogout = async () => {
+    await attendanceWrites.current;
     try {
       await apiRequest('/api/auth/logout', { method: 'POST' });
     } catch {
       // ignore
     }
     setAuthToken(null);
+    clearCachedWorkspaceSnapshot();
     setWorkspace(null);
     setAuth((prev) => ({ ...prev, authenticated: false, teacher: null }));
   };
 
   // --- MUTATION HANDLERS ---
-  const markAttendance = async (params: {
-    studentId: string;
-    date: string;
-    status: AttendanceStatus;
-    actualArrivalTime?: string | null;
-    note?: string;
-  }) => {
-    try {
-      const snap = await apiRequest<WorkspaceSnapshot>('/api/attendance', {
-        method: 'POST',
-        body: params,
-        queueableOffline: true,
-        offlineLabel: `Attendance ${params.status}`,
-      });
-      setWorkspace(snap);
-      cacheWorkspaceSnapshot(snap);
-    } catch (err) {
-      setPendingOfflineCount(getOfflineQueue().length);
-      showToast(err instanceof Error ? err.message : 'Unable to update attendance.');
-    }
-  };
+  const markAttendance = useCallback((edit: AttendanceEdit) => {
+    setAttendanceEdits((items) => [...items, edit]);
+    const write = attendanceWrites.current.then(async () => {
+      let result: AttendanceRecord | null | undefined;
+      try {
+        if (navigator.onLine && getOfflineQueue().length) await flushOfflineQueue();
+        const response = await apiRequest<{ attendance: AttendanceRecord | null }>('/api/attendance?response=record', {
+          method: 'POST',
+          body: edit,
+          queueableOffline: true,
+          offlineLabel: `Attendance ${edit.status}`,
+        });
+        result = response.attendance;
+      } catch (error) {
+        if (!(error instanceof OfflineQueuedError)) {
+          showToast(error instanceof Error ? error.message : 'Unable to update attendance.');
+          return false;
+        }
+        setPendingOfflineCount(getOfflineQueue().length);
+        showToast(error.message);
+      } finally {
+        setAttendanceEdits((items) => items.filter((item) => item !== edit));
+      }
+      setWorkspace((current) => current ? { ...current, attendance: applyAttendance(current.attendance, edit, result) } : current);
+      return true;
+    });
+    attendanceWrites.current = write.then(() => {});
+    return write;
+  }, [showToast]);
 
   const bulkMarkAbsent = async (date: string, studentIds: string[]) => {
-    const snap = await apiRequest<WorkspaceSnapshot>('/api/attendance/bulk', {
-      method: 'POST',
-      body: {
-        date,
-        entries: studentIds.map((studentId) => ({ studentId, status: 'absent' })),
-      },
+    const write = attendanceWrites.current.then(async () => {
+      await flushOfflineQueue();
+      const res = await apiRequest<WorkspaceSnapshot>('/api/attendance/bulk', {
+        method: 'POST',
+        body: { date, entries: studentIds.map((studentId) => ({ studentId, status: 'absent' })) },
+      });
+      safeSetWorkspace(res);
+      showToast(`Marked ${studentIds.length} remaining student${studentIds.length === 1 ? '' : 's'} absent.`);
     });
-    setWorkspace(snap);
-    showToast(`Marked ${studentIds.length} remaining student${studentIds.length === 1 ? '' : 's'} absent.`);
+    attendanceWrites.current = write.catch(() => {});
+    return write;
   };
 
   const updateHomework = async (id: string, patch: Record<string, unknown>) => {
@@ -319,8 +370,8 @@ export default function App() {
         queueableOffline: true,
         offlineLabel: 'Homework status update',
       });
-      setWorkspace(snap);
-      cacheWorkspaceSnapshot(snap);
+      safeSetWorkspace(snap);
+      showToast('Homework updated.');
     } catch (err) {
       setPendingOfflineCount(getOfflineQueue().length);
       showToast(err instanceof Error ? err.message : 'Unable to update homework.');
@@ -332,7 +383,7 @@ export default function App() {
     return (
       <div className="min-h-screen flex items-center justify-center p-6">
         <div className="liquid-glass rounded-3xl px-8 py-6 text-center space-y-2">
-          <div className="w-10 h-10 mx-auto rounded-xl bg-sky-600 dark:bg-white text-white dark:text-black font-display font-extrabold flex items-center justify-center text-lg">
+          <div className="w-10 h-10 mx-auto rounded-xl glass-primary text-white font-display font-extrabold flex items-center justify-center text-lg">
             T
           </div>
           <p className="text-sm font-medium text-slate-700 dark:text-neutral-300">Loading Tuitio workspace...</p>
@@ -341,11 +392,27 @@ export default function App() {
     );
   }
 
+  if (authError) {
+    return (
+      <main className="min-h-dvh grid place-items-center p-4">
+        <div className="liquid-glass-strong w-full max-w-sm rounded-3xl p-6 space-y-3">
+          <h1 className="text-lg font-bold">Unable to load Tuitio</h1>
+          <p className="text-sm" role="alert">{authError}</p>
+          <button type="button" className="glass-primary rounded-xl px-4 py-2 text-sm" onClick={() => {
+            setAuthError(null);
+            setAuth((status) => ({ ...status, loading: true }));
+            setAuthAttempt((attempt) => attempt + 1);
+          }}>Retry</button>
+        </div>
+      </main>
+    );
+  }
+
   if (!auth.authenticated) {
     return (
       <AuthOnboarding
         initialized={auth.initialized}
-        theme={theme}
+        theme={resolvedTheme}
         onToggleTheme={toggleLightDark}
         onAuthenticated={(teacher) => {
           setAuth({ loading: false, initialized: true, authenticated: true, teacher });
@@ -359,20 +426,23 @@ export default function App() {
     return (
       <div className="min-h-screen flex items-center justify-center p-6">
         <div className="liquid-glass rounded-3xl p-8 max-w-md w-full space-y-3">
-          <div className="h-5 w-40 rounded-lg bg-sky-100 dark:bg-neutral-800 animate-pulse" />
-          <div className="h-24 rounded-2xl bg-sky-50 dark:bg-neutral-900 animate-pulse" />
-          <div className="h-24 rounded-2xl bg-sky-50 dark:bg-neutral-900 animate-pulse" />
+          {workspaceError ? (
+            <>
+              <p className="text-sm" role="alert">{workspaceError}</p>
+              <button className="glass-primary rounded-xl px-4 py-2 text-sm" type="button" onClick={loadWorkspace}>Retry</button>
+            </>
+          ) : <p className="text-sm" role="status">Loading workspace…</p>}
         </div>
       </div>
     );
   }
 
   return (
-    <div className="min-h-screen flex flex-col lg:flex-row">
+    <div className="app-shell flex flex-col lg:flex-row">
       {/* DESKTOP SIDEBAR (252px) */}
-      <aside className="hidden lg:flex lg:flex-col lg:w-64 lg:shrink-0 lg:sticky lg:top-0 lg:h-screen p-4 border-r border-sky-200/70 dark:border-white/12 bg-white/55 dark:bg-black/95 backdrop-blur-xl no-print">
+      <aside className="glass-chrome hidden lg:flex lg:flex-col lg:w-60 lg:shrink-0 lg:sticky lg:top-0 lg:h-dvh p-4 border-r no-print">
         <div className="flex items-center gap-2.5 px-2.5 py-2">
-          <div className="w-9 h-9 rounded-xl bg-sky-600 dark:bg-white text-white dark:text-black flex items-center justify-center font-display font-extrabold text-lg shrink-0">
+          <div className="w-9 h-9 rounded-xl glass-primary text-white flex items-center justify-center font-display font-extrabold text-lg shrink-0">
             T
           </div>
           <div className="min-w-0">
@@ -394,9 +464,10 @@ export default function App() {
                 key={item.id}
                 type="button"
                 onClick={() => handleNavigate(item.id)}
+                aria-current={active ? 'page' : undefined}
                 className={`w-full flex items-center justify-between gap-2.5 px-3 py-2.5 rounded-xl text-sm font-medium transition-colors whitespace-nowrap ${
                   active
-                    ? 'bg-sky-600 text-white dark:bg-white dark:text-black font-semibold'
+                    ? 'glass-primary text-white font-semibold'
                     : 'text-slate-700 dark:text-neutral-300 hover:bg-sky-50/90 dark:hover:bg-white/10'
                 }`}
               >
@@ -405,7 +476,7 @@ export default function App() {
                   <span className="truncate">{item.label}</span>
                 </span>
                 {item.id === 'notifications' && unreadAlerts > 0 && (
-                  <span className={`font-mono text-[11px] ${active ? 'text-white/90 dark:text-black' : 'text-sky-700 dark:text-white'}`}>
+                  <span className={`font-mono text-[11px] ${active ? 'text-white/90' : 'text-sky-700 dark:text-sky-200'}`}>
                     {unreadAlerts}
                   </span>
                 )}
@@ -439,7 +510,7 @@ export default function App() {
       {/* MAIN CONTENT SHELL */}
       <div className="flex-1 min-w-0 flex flex-col">
         {/* TOP HEADER BAR (Compact on mobile <= 56px so mobile sticky stays well below 15%) */}
-        <header className="sticky top-0 z-30 h-14 px-4 sm:px-6 flex items-center justify-between gap-4 border-b border-sky-200/70 dark:border-white/12 bg-white/75 dark:bg-black/90 backdrop-blur-xl no-print">
+        <header className="app-toolbar glass-chrome sticky top-0 z-30 px-4 sm:px-6 flex items-center justify-between gap-3 border-b no-print">
           <div className="flex items-center gap-2.5 min-w-0">
             <button
               type="button"
@@ -458,7 +529,7 @@ export default function App() {
               type="button"
               onClick={() => setCommandOpen(true)}
               aria-label="Global search"
-              className="inline-flex items-center gap-2 px-3 py-1.5 rounded-xl border border-sky-200/80 dark:border-white/15 bg-white/80 dark:bg-neutral-950 text-xs text-slate-600 dark:text-neutral-300 hover:bg-white dark:hover:bg-neutral-900 whitespace-nowrap shrink-0"
+              className="inline-flex min-h-11 lg:min-h-9 items-center gap-2 px-3 rounded-xl border border-sky-200/80 dark:border-white/15 bg-white/65 dark:bg-neutral-950/60 text-xs text-slate-600 dark:text-neutral-300 hover:bg-white dark:hover:bg-neutral-900 whitespace-nowrap shrink-0"
             >
               <Search className="w-3.5 h-3.5" />
               <span className="hidden sm:inline">Search...</span>
@@ -469,7 +540,7 @@ export default function App() {
               type="button"
               onClick={toggleLightDark}
               aria-label="Toggle Light and Dark theme"
-              className="p-2 rounded-xl border border-sky-200/80 dark:border-white/15 bg-white/80 dark:bg-neutral-950 text-slate-700 dark:text-white hover:bg-white dark:hover:bg-neutral-900 shrink-0"
+              className="grid size-11 lg:size-9 place-items-center rounded-xl border border-sky-200/80 dark:border-white/15 bg-white/65 dark:bg-neutral-950/60 text-slate-700 dark:text-white hover:bg-white dark:hover:bg-neutral-900 shrink-0"
             >
               {resolvedTheme === 'dark' ? <Sun className="w-4 h-4" /> : <Moon className="w-4 h-4" />}
             </button>
@@ -480,7 +551,7 @@ export default function App() {
                 setSection('dashboard');
                 setLiveMode((v) => !v);
               }}
-              className="inline-flex items-center gap-1.5 px-3.5 py-1.5 rounded-xl text-xs font-semibold bg-sky-600 hover:bg-sky-700 dark:bg-white dark:hover:bg-neutral-200 text-white dark:text-black whitespace-nowrap shrink-0"
+              className="inline-flex min-h-11 lg:min-h-9 items-center gap-1.5 px-3.5 rounded-xl text-xs font-semibold glass-primary whitespace-nowrap shrink-0"
             >
               <Play className="w-3.5 h-3.5" />
               <span>{liveMode ? 'Dashboard' : 'Live Mode'}</span>
@@ -489,7 +560,8 @@ export default function App() {
         </header>
 
         {/* MAIN WORKSPACE */}
-        <main className="flex-1 w-full max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-6 pb-24 lg:pb-10">
+        <main className="app-content flex-1 w-full max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 pt-5 sm:pt-6 pb-10">
+          <Suspense fallback={<p className="liquid-glass rounded-2xl p-5 text-sm" role="status">Loading {NAV_ITEMS.find((item) => item.id === section)?.label.toLowerCase()}…</p>}>
           {section === 'dashboard' && (
             <CommandCenter
               workspace={workspace}
@@ -498,13 +570,9 @@ export default function App() {
               onSetLiveMode={setLiveMode}
               onNavigate={handleNavigate}
               onOpenStudent={handleOpenStudent}
-              onQuickHomeworkUpdate={async (hwId, patch) => {
-                await updateHomework(hwId, patch);
-                showToast('Homework updated.');
-              }}
+              onQuickHomeworkUpdate={updateHomework}
               onQuickAttendance={async (studentId, status) => {
                 await markAttendance({ studentId, date: workspace.todayIst, status });
-                showToast(`Marked ${status}.`);
               }}
             />
           )}
@@ -592,7 +660,7 @@ export default function App() {
                   method: 'POST',
                   body: payload,
                 });
-                setWorkspace(snap);
+                safeSetWorkspace(snap);
                 showToast('Daily student progress saved.');
               }}
               onOpenStudent={handleOpenStudent}
@@ -607,16 +675,13 @@ export default function App() {
                   method: 'POST',
                   body: payload,
                 });
-                setWorkspace(snap);
+                safeSetWorkspace(snap);
                 showToast('Homework assigned.');
               }}
-              onUpdateHomework={async (id, patch) => {
-                await updateHomework(id, patch);
-                showToast('Homework updated.');
-              }}
+              onUpdateHomework={updateHomework}
               onDeleteHomework={async (id) => {
                 const snap = await apiRequest<WorkspaceSnapshot>(`/api/homework/${id}`, { method: 'DELETE' });
-                setWorkspace(snap);
+                safeSetWorkspace(snap);
                 showToast('Homework removed.');
               }}
               onCarryForward={async () => {
@@ -638,7 +703,7 @@ export default function App() {
                   method: 'POST',
                   body: payload,
                 });
-                setWorkspace(snap);
+                safeSetWorkspace(snap);
                 showToast('Examination scheduled.');
               }}
               onUpdateExam={async (id, patch) => {
@@ -646,12 +711,12 @@ export default function App() {
                   method: 'PUT',
                   body: patch,
                 });
-                setWorkspace(snap);
+                safeSetWorkspace(snap);
                 showToast('Examination updated.');
               }}
               onDeleteExam={async (id) => {
                 const snap = await apiRequest<WorkspaceSnapshot>(`/api/exams/${id}`, { method: 'DELETE' });
-                setWorkspace(snap);
+                safeSetWorkspace(snap);
                 showToast('Examination removed.');
               }}
             />
@@ -682,12 +747,12 @@ export default function App() {
                   method: 'POST',
                   body: payload,
                 });
-                setWorkspace(snap);
+                safeSetWorkspace(snap);
                 showToast('Discount rule added.');
               }}
               onDeleteDiscount={async (id) => {
                 const snap = await apiRequest<WorkspaceSnapshot>(`/api/discounts/${id}`, { method: 'DELETE' });
-                setWorkspace(snap);
+                safeSetWorkspace(snap);
                 showToast('Discount removed.');
               }}
             />
@@ -698,11 +763,11 @@ export default function App() {
               workspace={workspace}
               onMarkRead={async (id) => {
                 const snap = await apiRequest<WorkspaceSnapshot>(`/api/notifications/${id}/read`, { method: 'POST' });
-                setWorkspace(snap);
+                safeSetWorkspace(snap);
               }}
               onMarkAllRead={async () => {
                 const snap = await apiRequest<WorkspaceSnapshot>('/api/notifications/read-all', { method: 'POST' });
-                setWorkspace(snap);
+                safeSetWorkspace(snap);
                 showToast('All alerts marked read.');
               }}
             />
@@ -720,17 +785,17 @@ export default function App() {
                   method: 'PUT',
                   body: next,
                 });
-                setWorkspace(snap);
+                safeSetWorkspace(snap);
                 showToast('Settings saved.');
               }}
               onSeedDemo={async () => {
                 const snap = await apiRequest<WorkspaceSnapshot>('/api/demo/seed', { method: 'POST' });
-                setWorkspace(snap);
+                safeSetWorkspace(snap);
                 showToast('Isolated sample batch loaded.');
               }}
               onClearDemo={async () => {
                 const snap = await apiRequest<WorkspaceSnapshot>('/api/demo/clear', { method: 'POST' });
-                setWorkspace(snap);
+                safeSetWorkspace(snap);
                 showToast('Sample demo data removed.');
               }}
               onRestoreBackup={async (json) => {
@@ -738,28 +803,19 @@ export default function App() {
                   method: 'POST',
                   body: json,
                 });
-                setWorkspace(snap);
+                safeSetWorkspace(snap);
                 showToast('Workspace restored from backup.');
               }}
             />
           )}
+          </Suspense>
         </main>
       </div>
-
-      {/* MOBILE FLOATING QUICK-ADD CONTEXT BUTTON */}
-      <button
-        type="button"
-        onClick={() => handleNavigate(section === 'homework' ? 'homework' : section === 'fees' ? 'fees' : section === 'students' ? 'students' : 'attendance')}
-        aria-label="Quick contextual action"
-        className="lg:hidden fixed right-3.5 bottom-[74px] z-30 w-11 h-11 rounded-2xl bg-sky-600 dark:bg-white text-white dark:text-black shadow-lg flex items-center justify-center active:scale-95 transition-transform no-print"
-      >
-        <Plus className="w-5 h-5" />
-      </button>
 
       {/* MOBILE BOTTOM NAVIGATION BAR: Home | Students | Attendance | Planner | More */}
       <nav
         aria-label="Mobile navigation"
-        className="lg:hidden fixed bottom-0 left-0 right-0 z-40 h-16 pb-safe border-t border-sky-200/80 dark:border-white/15 bg-white/90 dark:bg-black/95 backdrop-blur-xl grid grid-cols-5 items-center no-print"
+        className="app-dock glass-chrome lg:hidden fixed bottom-0 left-0 right-0 z-40 border-t grid grid-cols-5 items-center no-print"
       >
         {(
           [
@@ -770,16 +826,18 @@ export default function App() {
           ] as const
         ).map((item) => {
           const Icon = item.icon;
-          const active = section === item.id && !mobileMoreOpen;
+          const active = section === item.id && !mobileMoreOpen && !liveMode;
           return (
             <button
               key={item.id}
               type="button"
               onClick={() => handleNavigate(item.id)}
-              className={`min-h-[48px] flex flex-col items-center justify-center gap-0.5 text-[10px] font-semibold transition-colors ${
+              aria-current={active ? 'page' : undefined}
+              data-active={active}
+              className={`min-h-12 flex flex-col items-center justify-center text-[11px] font-semibold ${
                 active
-                  ? 'text-sky-600 dark:text-white'
-                  : 'text-slate-500 dark:text-neutral-500'
+                  ? 'text-sky-800 dark:text-sky-200'
+                  : 'text-slate-600 dark:text-neutral-300'
               }`}
             >
               <Icon className="w-5 h-5" />
@@ -791,10 +849,12 @@ export default function App() {
         <button
           type="button"
           onClick={() => setMobileMoreOpen((v) => !v)}
-          className={`min-h-[48px] flex flex-col items-center justify-center gap-0.5 text-[10px] font-semibold transition-colors ${
+          aria-expanded={mobileMoreOpen}
+          data-active={mobileMoreOpen || ['homework', 'exams', 'fees', 'notifications', 'reports', 'settings'].includes(section)}
+          className={`min-h-12 flex flex-col items-center justify-center text-[11px] font-semibold ${
             mobileMoreOpen || ['homework', 'exams', 'fees', 'notifications', 'reports', 'settings'].includes(section)
-              ? 'text-sky-600 dark:text-white'
-              : 'text-slate-500 dark:text-neutral-500'
+              ? 'text-sky-800 dark:text-sky-200'
+              : 'text-slate-600 dark:text-neutral-300'
           }`}
         >
           <Menu className="w-5 h-5" />
@@ -805,17 +865,20 @@ export default function App() {
       {/* MOBILE "MORE" BOTTOM SHEET */}
       {mobileMoreOpen && (
         <div
-          className="lg:hidden fixed inset-0 z-50 bg-slate-950/50 dark:bg-black/80 backdrop-blur-sm flex items-end"
+          className="lg:hidden fixed inset-0 z-50 bg-slate-950/50 dark:bg-black/80 flex items-end"
           onClick={() => setMobileMoreOpen(false)}
         >
           <div
-            className="w-full rounded-t-3xl liquid-glass-strong p-5 pb-8 space-y-4"
+            className="glass-dialog-panel w-full rounded-t-3xl liquid-glass-strong p-5 pb-[max(1.25rem,env(safe-area-inset-bottom))] space-y-4"
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="mobile-menu-title"
             onClick={(e) => e.stopPropagation()}
           >
             <div className="w-10 h-1 rounded-full bg-slate-300 dark:bg-neutral-700 mx-auto" />
             <div className="flex items-center justify-between">
-              <p className="text-sm font-bold text-slate-950 dark:text-white">More Workspaces</p>
-              <button type="button" onClick={() => setMobileMoreOpen(false)} aria-label="Close drawer">
+              <p id="mobile-menu-title" className="text-base font-bold text-slate-950 dark:text-white">More workspaces</p>
+              <button type="button" onClick={() => setMobileMoreOpen(false)} aria-label="Close drawer" className="grid size-11 place-items-center">
                 <X className="w-4 h-4" />
               </button>
             </div>
@@ -861,7 +924,7 @@ export default function App() {
 
       {/* OFFLINE BANNER */}
       {!isOnline && (
-        <div className="fixed bottom-20 lg:bottom-4 left-4 z-50 flex items-center gap-2 rounded-xl bg-amber-600 dark:bg-white text-white dark:text-black px-3.5 py-2 text-xs font-semibold shadow-lg">
+        <div className="app-bottom-notice fixed bottom-20 lg:bottom-4 left-4 z-50 flex items-center gap-2 rounded-xl bg-amber-700 text-white px-3.5 py-2 text-xs font-semibold shadow-lg">
           <WifiOff className="w-4 h-4" />
           <span>Offline Mode · {pendingOfflineCount} queued</span>
         </div>
@@ -871,7 +934,7 @@ export default function App() {
       {toast && (
         <div
           role="status"
-          className="fixed bottom-20 lg:bottom-5 right-4 z-50 liquid-glass-strong rounded-2xl px-4 py-2.5 text-xs font-semibold text-slate-900 dark:text-white shadow-xl"
+          className="app-bottom-notice pointer-events-none fixed bottom-20 lg:bottom-5 right-4 left-4 sm:left-auto z-50 liquid-glass-strong rounded-2xl px-4 py-2.5 text-sm font-semibold text-slate-900 dark:text-white shadow-xl"
         >
           {toast}
         </div>

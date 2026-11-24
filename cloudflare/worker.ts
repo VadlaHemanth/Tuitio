@@ -1,9 +1,10 @@
 import { billingMonthSchema, feeReminderStatements, invoiceAdjustment, invoicePatchSchema, mapBillingInvoice, monthlyBillStatements, paymentReceiptColumns, paymentSchema, paymentStatements, type BillingStatement, type PaymentReceipt } from '../server/billing';
 // Cloudflare Worker Entrypoint — Complete Edge Runtime with D1 + Static Assets + Cron Triggers
 import { getPushKeys, pushEndpointSchema, pushSubscriptionSchema, sendFeePush } from './webPush';
+import { attendanceDeleteSql, attendanceSchema, attendanceUpsert, bulkAttendanceSchema, mapAttendance } from '../server/attendance';
+import { examCreateSchema, examInsert, examPatchSchema, examUpdate, homeworkAssignment, homeworkCarryForward, homeworkCreateSchema, homeworkPatchSchema } from '../server/classwork';
 import { studentCreateSchema, studentPatchSchema } from '../server/studentPayload';
 import type {
-  AttendanceRecord,
   AuditLogEntry,
   DailyProgressLog,
   DiscountRule,
@@ -352,17 +353,7 @@ async function getWorkspaceSnapshot(db: D1Database): Promise<WorkspaceSnapshot> 
   if (generated.attempted) billing = await getBillingData(db, todayIst);
   const { students, discounts, invoices } = billing;
   const attRows = (await db.prepare('SELECT * FROM attendance ORDER BY date DESC, updated_at DESC LIMIT 500').bind().all<Record<string, unknown>>()).results;
-  const attendance: AttendanceRecord[] = attRows.map((r) => ({
-    id: String(r.id),
-    studentId: String(r.student_id),
-    date: String(r.date),
-    status: String(r.status) as AttendanceRecord['status'],
-    actualArrivalTime: r.actual_arrival_time ? String(r.actual_arrival_time) : null,
-    departureTime: r.departure_time ? String(r.departure_time) : null,
-    note: String(r.note ?? ''),
-    isDemo: Number(r.is_demo) === 1,
-    updatedAt: String(r.updated_at),
-  }));
+  const attendance = attRows.map(mapAttendance);
 
   const hwRows = (await db.prepare('SELECT * FROM homework ORDER BY due_date ASC, updated_at DESC').bind().all<Record<string, unknown>>()).results;
   const homework: HomeworkItem[] = hwRows.map((r) => ({
@@ -942,7 +933,10 @@ async function handleRequest(request: Request, env: Env): Promise<Response> {
 
     if (studentIdMatch && method === 'DELETE') {
       const id = studentIdMatch[1];
-      await env.DB.prepare('DELETE FROM students WHERE id = ?').bind(id).run();
+      const body = (await request.json().catch(() => null)) as { confirmDelete?: boolean } | null;
+      if (body?.confirmDelete !== true) return errorResponse('Confirm permanent removal to delete the student.');
+      const result = await env.DB.prepare('DELETE FROM students WHERE id = ?').bind(id).run();
+      if (!result.meta?.changes) return errorResponse('Student not found.', 404);
       await logAudit(env.DB, 'PERMANENT_DELETE', 'student', id, 'Deleted student permanently');
       const snap = await getWorkspaceSnapshot(env.DB);
       return jsonResponse({ snapshot: snap, ...snap });
@@ -976,123 +970,75 @@ async function handleRequest(request: Request, env: Env): Promise<Response> {
       return jsonResponse({ promoted, graduated, snapshot: snap, ...snap });
     }
 
-    // 9. Attendance
+    // Attendance
     if (url.pathname === '/api/attendance' && method === 'POST') {
-      const body = (await request.json().catch(() => ({}))) as Record<string, unknown>;
-      const { studentId, date, status, actualArrivalTime, departureTime, note } = body;
-      const now = new Date().toISOString();
-      const existing = await env.DB.prepare('SELECT id FROM attendance WHERE student_id = ? AND date = ?').bind(studentId, date).first<{ id: string }>();
-
-      if (existing) {
-        await env.DB
-          .prepare('UPDATE attendance SET status = ?, actual_arrival_time = ?, departure_time = ?, note = ?, updated_at = ? WHERE id = ?')
-          .bind(status, actualArrivalTime ?? null, departureTime ?? null, note ?? '', now, existing.id)
-          .run();
+      const parsed = attendanceSchema.safeParse(await request.json().catch(() => null));
+      if (!parsed.success) return errorResponse('Invalid attendance details.');
+      const entry = parsed.data;
+      let attendance = null;
+      if (entry.status === 'unmarked') {
+        await env.DB.prepare(attendanceDeleteSql).bind(entry.studentId, entry.date).run();
       } else {
-        await env.DB
-          .prepare('INSERT INTO attendance (id, student_id, date, status, actual_arrival_time, departure_time, note, is_demo, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, 0, ?)')
-          .bind(generateId('att'), studentId, date, status, actualArrivalTime ?? null, departureTime ?? null, note ?? '', now)
-          .run();
+        const { sql, values } = attendanceUpsert(entry, generateId('att'), new Date().toISOString());
+        const row = await env.DB.prepare(sql + ' RETURNING *').bind(...values).first();
+        if (row) attendance = mapAttendance(row);
       }
+      if (url.searchParams.get('response') === 'record') return jsonResponse({ attendance });
       const snap = await getWorkspaceSnapshot(env.DB);
       return jsonResponse({ snapshot: snap, ...snap });
     }
 
     if (url.pathname === '/api/attendance/bulk' && method === 'POST') {
-      const body = (await request.json().catch(() => ({}))) as Record<string, unknown>;
-      const date = String(body.date || formatIstDate(new Date()));
-      const entries = Array.isArray(body.entries) ? body.entries : [];
+      const parsed = bulkAttendanceSchema.safeParse(await request.json().catch(() => null));
+      if (!parsed.success) return errorResponse('Invalid bulk attendance details.');
+      const { date, entries } = parsed.data;
       const now = new Date().toISOString();
-
-      for (const e of entries) {
-        const existing = await env.DB.prepare('SELECT id FROM attendance WHERE student_id = ? AND date = ?').bind(e.studentId, date).first<{ id: string }>();
-        if (existing) {
-          await env.DB.prepare('UPDATE attendance SET status = ?, actual_arrival_time = ?, note = ?, updated_at = ? WHERE id = ?').bind(e.status, e.actualArrivalTime ?? null, e.note ?? '', now, existing.id).run();
-        } else {
-          await env.DB.prepare('INSERT INTO attendance (id, student_id, date, status, actual_arrival_time, note, is_demo, updated_at) VALUES (?, ?, ?, ?, ?, ?, 0, ?)').bind(generateId('att'), e.studentId, date, e.status, e.actualArrivalTime ?? null, e.note ?? '', now).run();
-        }
-      }
+      const writes = entries.map((entry) => attendanceUpsert({ ...entry, date }, generateId('att'), now));
+      await runBillingBatch(env.DB, writes);
       await logAudit(env.DB, 'BULK_ATTENDANCE', 'attendance', date, `Marked attendance for ${entries.length} students`);
       const snap = await getWorkspaceSnapshot(env.DB);
       return jsonResponse({ snapshot: snap, ...snap });
     }
 
-    // 10. Homework
+    // Homework
     if (url.pathname === '/api/homework' && method === 'POST') {
-      const body = (await request.json().catch(() => ({}))) as Record<string, unknown>;
-      const now = new Date().toISOString();
-      const studentIds = Array.isArray(body.studentIds) ? body.studentIds : [body.studentId];
-
-      for (const sId of studentIds) {
-        await env.DB
-          .prepare(`
-            INSERT INTO homework (
-              id, student_id, subject, chapter, topic, title, instructions, assigned_date, due_date,
-              estimated_minutes, priority, source, completion_pct, status, completed_date, teacher_verified,
-              needs_help, remarks, carried_from_id, is_demo, created_at, updated_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, 'not_started', NULL, 0, 0, '', NULL, 0, ?, ?)
-          `)
-          .bind(
-            generateId('hw'),
-            sId,
-            String(body.subject || 'General'),
-            String(body.chapter || ''),
-            String(body.topic || ''),
-            String(body.title || 'Homework'),
-            String(body.instructions || ''),
-            String(body.assignedDate || formatIstDate(new Date())),
-            String(body.dueDate || formatIstDate(new Date())),
-            Number(body.estimatedMinutes || 20),
-            String(body.priority || 'normal'),
-            String(body.source || 'tuition'),
-            now,
-            now,
-          )
-          .run();
-      }
+      const body = (await request.json().catch(() => ({}))) as Record<string, unknown> | null;
+      const parsed = homeworkCreateSchema.safeParse(body?.studentId && !body.studentIds
+        ? { ...body, studentIds: [body.studentId] } : body);
+      if (!parsed.success) return errorResponse('Check the students, homework title and due date.');
+      const now = new Date();
+      await runBillingBatch(env.DB, homeworkAssignment(parsed.data, formatIstDate(now), now.toISOString(), () => generateId('hw')));
       const snap = await getWorkspaceSnapshot(env.DB);
       return jsonResponse({ snapshot: snap, ...snap }, 201);
     }
 
     const hwIdMatch = url.pathname.match(/^\/api\/homework\/([^/]+)$/);
     if (hwIdMatch && method === 'PUT') {
-      const id = hwIdMatch[1];
-      const body = (await request.json().catch(() => ({}))) as Record<string, unknown>;
-      const now = new Date().toISOString();
-      const completedDate = body.status === 'completed' || body.status === 'verified' ? formatIstDate(new Date()) : null;
-
-      await env.DB
-        .prepare(`
-          UPDATE homework SET
-            status = COALESCE(?, status),
-            completion_pct = COALESCE(?, completion_pct),
-            teacher_verified = COALESCE(?, teacher_verified),
-            needs_help = COALESCE(?, needs_help),
-            remarks = COALESCE(?, remarks),
-            due_date = COALESCE(?, due_date),
-            completed_date = COALESCE(?, completed_date),
-            updated_at = ?
-          WHERE id = ?
-        `)
-        .bind(
-          body.status !== undefined ? String(body.status) : null,
-          body.completionPct !== undefined ? Number(body.completionPct) : null,
-          body.teacherVerified !== undefined ? (body.teacherVerified ? 1 : 0) : null,
-          body.needsHelp !== undefined ? (body.needsHelp ? 1 : 0) : null,
-          body.remarks !== undefined ? String(body.remarks) : null,
-          body.dueDate !== undefined ? String(body.dueDate) : null,
-          completedDate,
-          now,
-          id,
-        )
-        .run();
+      const parsed = homeworkPatchSchema.safeParse(await request.json().catch(() => null));
+      if (!parsed.success) return errorResponse('Invalid homework update.');
+      const task = parsed.data;
+      const now = new Date();
+      const completed = task.status === 'completed' || task.status === 'verified';
+      const result = await env.DB.prepare(`
+        UPDATE homework SET status = COALESCE(?, status), completion_pct = COALESCE(?, completion_pct),
+          teacher_verified = COALESCE(?, teacher_verified), needs_help = COALESCE(?, needs_help),
+          remarks = COALESCE(?, remarks), due_date = COALESCE(?, due_date),
+          completed_date = CASE WHEN ? THEN COALESCE(completed_date, ?) WHEN ? THEN NULL ELSE completed_date END,
+          updated_at = ? WHERE id = ?
+      `).bind(
+        task.status ?? null, task.completionPct ?? null,
+        task.teacherVerified === undefined ? null : Number(task.teacherVerified),
+        task.needsHelp === undefined ? null : Number(task.needsHelp),
+        task.remarks ?? null, task.dueDate ?? null, Number(completed), formatIstDate(now),
+        Number(task.status !== undefined), now.toISOString(), hwIdMatch[1],
+      ).run();
+      if (!result.meta?.changes) return errorResponse('Homework not found.', 404);
       const snap = await getWorkspaceSnapshot(env.DB);
       return jsonResponse({ snapshot: snap, ...snap });
     }
 
     if (hwIdMatch && method === 'DELETE') {
-      const id = hwIdMatch[1];
-      await env.DB.prepare('DELETE FROM homework WHERE id = ?').bind(id).run();
+      await env.DB.prepare('DELETE FROM homework WHERE id = ?').bind(hwIdMatch[1]).run();
       const snap = await getWorkspaceSnapshot(env.DB);
       return jsonResponse({ snapshot: snap, ...snap });
     }
@@ -1105,75 +1051,21 @@ async function handleRequest(request: Request, env: Env): Promise<Response> {
         toDate: addDaysToDateStr(snap.todayIst, 1),
       });
       const now = new Date().toISOString();
-
-      for (const d of drafts) {
-        await env.DB
-          .prepare('UPDATE homework SET status = ?, updated_at = ? WHERE id = ?')
-          .bind('carried_forward', now, d.carriedFromId)
-          .run();
-
-        await env.DB
-          .prepare(`
-            INSERT INTO homework (
-              id, student_id, subject, chapter, topic, title, instructions, assigned_date, due_date,
-              estimated_minutes, priority, source, completion_pct, status, teacher_verified, needs_help, remarks, carried_from_id, is_demo, created_at, updated_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'not_started', 0, 0, ?, ?, 0, ?, ?)
-          `)
-          .bind(
-            generateId('hw'),
-            d.studentId,
-            d.subject,
-            d.chapter,
-            d.topic,
-            d.title,
-            d.instructions,
-            d.assignedDate,
-            d.dueDate,
-            d.estimatedMinutes,
-            d.priority,
-            d.source,
-            d.completionPct,
-            d.remarks,
-            d.carriedFromId,
-            now,
-            now,
-          )
-          .run();
-      }
-      const updatedSnap = await getWorkspaceSnapshot(env.DB);
-      return jsonResponse({ carriedCount: drafts.length, snapshot: updatedSnap, ...updatedSnap });
+      const writes = drafts.map((draft) => homeworkCarryForward(draft, generateId('hw'), now));
+      const results = writes.length ? await runBillingBatch(env.DB, writes) : [];
+      const carriedCount = results.reduce((count, result) => count + (result.meta?.changes ?? 0), 0);
+      const updatedSnap = carriedCount ? await getWorkspaceSnapshot(env.DB) : snap;
+      return jsonResponse({ carriedCount, snapshot: updatedSnap, ...updatedSnap });
     }
 
     // Exams
     if (url.pathname === '/api/exams' && method === 'POST') {
-      const body = (await request.json().catch(() => ({}))) as Record<string, unknown>;
-      const id = generateId('ex');
-      const now = new Date().toISOString();
-      await env.DB
-        .prepare(`
-          INSERT INTO exams (
-            id, student_id, subject, exam_name, exam_type, exam_date, syllabus, max_marks,
-            obtained_marks, important_chapters_json, preparation_status, revision_plan, weak_areas_json, is_demo, created_at, updated_at
-          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?)
-        `)
-        .bind(
-          id,
-          String(body.studentId),
-          String(body.subject),
-          String(body.examName),
-          String(body.examType || 'unit_test'),
-          String(body.examDate),
-          String(body.syllabus || ''),
-          Number(body.maxMarks || 50),
-          body.obtainedMarks != null ? Number(body.obtainedMarks) : null,
-          JSON.stringify(body.importantChapters || []),
-          Number(body.preparationStatus || 25),
-          String(body.revisionPlan || ''),
-          JSON.stringify(body.weakAreas || []),
-          now,
-          now,
-        )
-        .run();
+      const parsed = examCreateSchema.safeParse(await request.json().catch(() => null));
+      if (!parsed.success) return errorResponse(parsed.error.issues[0]?.message || 'Invalid exam details.');
+      const student = await env.DB.prepare('SELECT id FROM students WHERE id = ?').bind(parsed.data.studentId).first();
+      if (!student) return errorResponse('Student not found.', 404);
+      const { sql, values } = examInsert(parsed.data, generateId('ex'), new Date().toISOString());
+      await env.DB.prepare(sql).bind(...values).run();
       const snap = await getWorkspaceSnapshot(env.DB);
       return jsonResponse({ snapshot: snap, ...snap }, 201);
     }
@@ -1181,48 +1073,20 @@ async function handleRequest(request: Request, env: Env): Promise<Response> {
     const examIdMatch = url.pathname.match(/^\/api\/exams\/([^/]+)$/);
     if (examIdMatch && method === 'PUT') {
       const id = examIdMatch[1];
-      const body = (await request.json().catch(() => ({}))) as Record<string, unknown>;
-      const now = new Date().toISOString();
-      await env.DB
-        .prepare(`
-          UPDATE exams SET
-            subject = COALESCE(?, subject),
-            exam_name = COALESCE(?, exam_name),
-            exam_type = COALESCE(?, exam_type),
-            exam_date = COALESCE(?, exam_date),
-            syllabus = COALESCE(?, syllabus),
-            max_marks = COALESCE(?, max_marks),
-            obtained_marks = ?,
-            important_chapters_json = COALESCE(?, important_chapters_json),
-            preparation_status = COALESCE(?, preparation_status),
-            revision_plan = COALESCE(?, revision_plan),
-            weak_areas_json = COALESCE(?, weak_areas_json),
-            updated_at = ?
-          WHERE id = ?
-        `)
-        .bind(
-          body.subject !== undefined ? String(body.subject) : null,
-          body.examName !== undefined ? String(body.examName) : null,
-          body.examType !== undefined ? String(body.examType) : null,
-          body.examDate !== undefined ? String(body.examDate) : null,
-          body.syllabus !== undefined ? String(body.syllabus) : null,
-          body.maxMarks !== undefined ? Number(body.maxMarks) : null,
-          body.obtainedMarks !== undefined ? (body.obtainedMarks != null ? Number(body.obtainedMarks) : null) : null,
-          body.importantChapters !== undefined ? JSON.stringify(body.importantChapters) : null,
-          body.preparationStatus !== undefined ? Number(body.preparationStatus) : null,
-          body.revisionPlan !== undefined ? String(body.revisionPlan) : null,
-          body.weakAreas !== undefined ? JSON.stringify(body.weakAreas) : null,
-          now,
-          id,
-        )
-        .run();
+      const parsed = examPatchSchema.safeParse(await request.json().catch(() => null));
+      if (!parsed.success) return errorResponse(parsed.error.issues[0]?.message || 'Invalid exam details.');
+      const { sql, values } = examUpdate(parsed.data, id, new Date().toISOString());
+      const result = await env.DB.prepare(sql).bind(...values).run();
+      if (!result.meta?.changes) {
+        const exam = await env.DB.prepare('SELECT id FROM exams WHERE id = ?').bind(id).first();
+        return exam ? errorResponse('Marks cannot exceed the maximum marks.') : errorResponse('Exam not found.', 404);
+      }
       const snap = await getWorkspaceSnapshot(env.DB);
       return jsonResponse({ snapshot: snap, ...snap });
     }
 
     if (examIdMatch && method === 'DELETE') {
-      const id = examIdMatch[1];
-      await env.DB.prepare('DELETE FROM exams WHERE id = ?').bind(id).run();
+      await env.DB.prepare('DELETE FROM exams WHERE id = ?').bind(examIdMatch[1]).run();
       const snap = await getWorkspaceSnapshot(env.DB);
       return jsonResponse({ snapshot: snap, ...snap });
     }
@@ -1416,9 +1280,20 @@ async function handleRequest(request: Request, env: Env): Promise<Response> {
     // 12. Settings
     if (url.pathname === '/api/settings' && method === 'PUT') {
       const body = (await request.json().catch(() => ({}))) as TuitionSettings;
-      const saved = await saveSettings(env.DB, body);
+      await saveSettings(env.DB, body);
       await logAudit(env.DB, 'UPDATE_SETTINGS', 'settings', 'default', 'Updated tuition settings');
-      return jsonResponse(saved);
+      return jsonResponse(await getWorkspaceSnapshot(env.DB));
+    }
+
+    if (url.pathname === '/api/backup/export' && method === 'GET') {
+      const data = await getWorkspaceSnapshot(env.DB);
+      return jsonResponse({ exportedAt: new Date().toISOString(), schemaVersion: 1, data }, 200, {
+        'Content-Disposition': `attachment; filename="tuitio-workspace-${data.todayIst}.json"`,
+      });
+    }
+
+    if (url.pathname === '/api/backup/restore' && method === 'POST') {
+      return errorResponse('JSON backup restore is unavailable on the hosted app.', 501);
     }
 
     // Fallback: If url is under /api/ and wasn't handled, return 404 JSON (NOT static asset 405)

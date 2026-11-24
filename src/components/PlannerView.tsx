@@ -54,6 +54,7 @@ export const PlannerView: React.FC<PlannerViewProps> = ({
   const [nextTasks, setNextTasks] = useState('');
   const [completionPct, setCompletionPct] = useState(80);
   const [savingProg, setSavingProg] = useState(false);
+  const [progressError, setProgressError] = useState('');
 
   const orderedBlocks = useMemo(() => {
     const base = [...dailyPlan.blocks];
@@ -81,6 +82,7 @@ export const PlannerView: React.FC<PlannerViewProps> = ({
   };
 
   const openProgressEditor = (studentId: string) => {
+    setProgressError('');
     const existing = workspace.progressLogs.find(
       (p) => p.studentId === studentId && p.date === workspace.todayIst,
     );
@@ -98,7 +100,8 @@ export const PlannerView: React.FC<PlannerViewProps> = ({
 
   const handleSaveProgress = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!editingProgressStudentId) return;
+    if (!editingProgressStudentId || savingProg) return;
+    setProgressError('');
     setSavingProg(true);
     try {
       const stu = workspace.students.find((s) => s.id === editingProgressStudentId);
@@ -120,6 +123,8 @@ export const PlannerView: React.FC<PlannerViewProps> = ({
         completionPct,
       });
       setEditingProgressStudentId(null);
+    } catch (error) {
+      setProgressError(error instanceof Error ? error.message : 'Unable to save the daily review.');
     } finally {
       setSavingProg(false);
     }
@@ -154,7 +159,7 @@ export const PlannerView: React.FC<PlannerViewProps> = ({
           <button
             type="button"
             onClick={onStartLiveMode}
-            className="inline-flex items-center gap-1.5 px-4 py-2.5 rounded-xl text-xs font-semibold bg-sky-600 hover:bg-sky-700 dark:bg-white dark:hover:bg-neutral-200 text-white dark:text-black whitespace-nowrap"
+            className="inline-flex items-center gap-1.5 px-4 py-2.5 rounded-xl text-xs font-semibold glass-primary text-white whitespace-nowrap"
           >
             <Play className="w-3.5 h-3.5" />
             <span>Open Live Session Screen</span>
@@ -359,12 +364,12 @@ export const PlannerView: React.FC<PlannerViewProps> = ({
       {/* Daily Progress Review Modal */}
       {editingProgressStudentId && (
         <div
-          className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/50 dark:bg-black/80 backdrop-blur-sm p-4"
+          className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/50 dark:bg-black/80 p-4"
           role="dialog"
           aria-modal="true"
           aria-label="Log Daily Student Progress"
         >
-          <form onSubmit={handleSaveProgress} className="liquid-glass-strong w-full max-w-lg rounded-3xl p-6 space-y-4">
+          <form onSubmit={handleSaveProgress} className="glass-dialog-panel liquid-glass-strong w-full max-w-lg rounded-3xl p-5 sm:p-6 space-y-4">
             <h3 className="text-lg font-bold text-slate-950 dark:text-white">
               Daily Review — {(() => {
                 const s = workspace.students.find((st) => st.id === editingProgressStudentId);
@@ -432,6 +437,7 @@ export const PlannerView: React.FC<PlannerViewProps> = ({
                 />
               </div>
             </div>
+            {progressError && <p role="alert" className="text-sm text-rose-700 dark:text-rose-200">{progressError}</p>}
             <div className="flex justify-end gap-2 pt-2">
               <button
                 type="button"
@@ -443,7 +449,7 @@ export const PlannerView: React.FC<PlannerViewProps> = ({
               <button
                 type="submit"
                 disabled={savingProg}
-                className="px-5 py-2 rounded-xl text-xs font-semibold bg-sky-600 dark:bg-white text-white dark:text-black"
+                className="px-5 py-2 rounded-xl text-xs font-semibold glass-primary text-white"
               >
                 {savingProg ? 'Saving...' : 'Save Daily Review'}
               </button>

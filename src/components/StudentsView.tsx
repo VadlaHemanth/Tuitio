@@ -169,7 +169,7 @@ export const StudentsView: React.FC<StudentsViewProps> = ({
               <button
                 type="button"
                 onClick={() => onChangeStatus(selectedStudent.id, 'active')}
-                className="inline-flex items-center gap-1.5 px-3.5 py-2 rounded-xl text-xs font-semibold bg-sky-600 dark:bg-white text-white dark:text-black"
+                className="inline-flex items-center gap-1.5 px-3.5 py-2 rounded-xl text-xs font-semibold glass-primary text-white"
               >
                 <RotateCcw className="w-3.5 h-3.5" />
                 <span>Restore Active (History Preserved)</span>
@@ -181,7 +181,7 @@ export const StudentsView: React.FC<StudentsViewProps> = ({
         {/* Profile Header */}
         <div className="liquid-glass-strong rounded-3xl p-5 sm:p-6 flex flex-col sm:flex-row sm:items-center justify-between gap-4">
           <div className="flex items-center gap-4">
-            <div className="w-16 h-16 rounded-2xl bg-sky-600 dark:bg-white text-white dark:text-black flex items-center justify-center font-display font-bold text-xl shrink-0">
+            <div className="w-16 h-16 rounded-2xl glass-primary text-white flex items-center justify-center font-display font-bold text-xl shrink-0">
               {(selectedStudent.nickname || selectedStudent.fullName).split(' ').map((w) => w[0]).join('').slice(0, 2).toUpperCase()}
             </div>
             <div>
@@ -228,7 +228,7 @@ export const StudentsView: React.FC<StudentsViewProps> = ({
               onClick={() => setProfileTab(id)}
               className={`px-3.5 py-2 rounded-xl text-xs font-semibold transition-colors whitespace-nowrap shrink-0 ${
                 profileTab === id
-                  ? 'bg-sky-600 text-white dark:bg-white dark:text-black'
+                  ? 'glass-primary text-white'
                   : 'text-slate-600 dark:text-neutral-400 hover:bg-white/70 dark:hover:bg-white/10'
               }`}
             >
@@ -376,7 +376,7 @@ export const StudentsView: React.FC<StudentsViewProps> = ({
                 <button
                   type="button"
                   onClick={() => onRecordPaymentShortcut(selectedStudent.id)}
-                  className="px-3.5 py-2 rounded-xl text-xs font-semibold bg-sky-600 dark:bg-white text-white dark:text-black"
+                  className="px-3.5 py-2 rounded-xl text-xs font-semibold glass-primary text-white"
                 >
                   Record Payment
                 </button>
@@ -578,7 +578,7 @@ export const StudentsView: React.FC<StudentsViewProps> = ({
               setEditingStudent(null);
               setShowFormModal(true);
             }}
-            className="inline-flex items-center gap-1.5 px-4 py-2.5 rounded-xl text-xs font-semibold bg-sky-600 hover:bg-sky-700 dark:bg-white dark:hover:bg-neutral-200 text-white dark:text-black whitespace-nowrap"
+            className="inline-flex items-center gap-1.5 px-4 py-2.5 rounded-xl text-xs font-semibold glass-primary text-white whitespace-nowrap"
           >
             <Plus className="w-4 h-4" />
             <span>Add Student</span>
@@ -654,7 +654,7 @@ export const StudentsView: React.FC<StudentsViewProps> = ({
             onClick={() => setDueOnly((v) => !v)}
             className={`px-3 py-2 rounded-xl text-xs font-medium border transition-colors whitespace-nowrap ${
               dueOnly
-                ? 'bg-sky-600 text-white border-sky-600 dark:bg-white dark:text-black dark:border-white'
+                ? 'glass-primary text-white border-sky-600 dark:border-white'
                 : 'bg-white/70 dark:bg-black border-sky-200/70 dark:border-white/15 text-slate-700 dark:text-neutral-300'
             }`}
           >
@@ -1197,7 +1197,7 @@ const StudentFormModal: React.FC<StudentFormModalProps> = ({
           <button
             type="submit"
             disabled={saving}
-            className="min-h-11 px-5 py-2.5 rounded-xl text-xs font-semibold bg-sky-600 hover:bg-sky-700 dark:bg-white dark:hover:bg-neutral-200 text-white dark:text-black disabled:opacity-60"
+            className="min-h-11 px-5 py-2.5 rounded-xl text-xs font-semibold glass-primary text-white disabled:opacity-60"
           >
             {saving ? 'Saving...' : initialStudent ? 'Save Changes' : 'Enroll Student'}
           </button>
@@ -1273,7 +1273,7 @@ const PromotionModal: React.FC<PromotionModalProps> = ({ workspace, onClose, onC
               onClick={() => setOverridePolicy('keep_override')}
               className={`px-3 py-1.5 rounded-lg font-semibold ${
                 overridePolicy === 'keep_override'
-                  ? 'bg-sky-600 text-white dark:bg-white dark:text-black'
+                  ? 'glass-primary text-white'
                   : 'border border-sky-200 dark:border-white/20 text-slate-700 dark:text-neutral-300'
               }`}
             >
@@ -1284,7 +1284,7 @@ const PromotionModal: React.FC<PromotionModalProps> = ({ workspace, onClose, onC
               onClick={() => setOverridePolicy('adopt_class_rate')}
               className={`px-3 py-1.5 rounded-lg font-semibold ${
                 overridePolicy === 'adopt_class_rate'
-                  ? 'bg-sky-600 text-white dark:bg-white dark:text-black'
+                  ? 'glass-primary text-white'
                   : 'border border-sky-200 dark:border-white/20 text-slate-700 dark:text-neutral-300'
               }`}
             >
@@ -1355,7 +1355,7 @@ const PromotionModal: React.FC<PromotionModalProps> = ({ workspace, onClose, onC
                 await onConfirm({ studentIds: selectedIds, overridePolicy });
                 setRunning(false);
               }}
-              className="px-5 py-2 rounded-xl text-xs font-semibold bg-sky-600 dark:bg-white text-white dark:text-black disabled:opacity-50"
+              className="px-5 py-2 rounded-xl text-xs font-semibold glass-primary text-white disabled:opacity-50"
             >
               {running ? 'Promoting...' : `Confirm Promote (${selectedIds.length})`}
             </button>

@@ -13,14 +13,26 @@ export function useTheme(initial: ThemePreference = 'light') {
     return initial;
   });
 
-  const [resolvedTheme, setResolvedTheme] = useState<'light' | 'dark'>('light');
+  const [resolvedTheme, setResolvedTheme] = useState<'light' | 'dark'>(() =>
+    document.documentElement.classList.contains('dark') ? 'dark' : 'light',
+  );
 
   useEffect(() => {
     const mq = window.matchMedia('(prefers-color-scheme: dark)');
+    const root = document.documentElement;
+    let frame = 0;
 
     const apply = () => {
       const isDark = preference === 'dark' || (preference === 'system' && mq.matches);
-      document.documentElement.classList.toggle('dark', isDark);
+      if (root.classList.contains('dark') !== isDark) {
+        root.classList.add('theme-switching');
+        root.classList.toggle('dark', isDark);
+        cancelAnimationFrame(frame);
+        frame = requestAnimationFrame(() => {
+          frame = requestAnimationFrame(() => root.classList.remove('theme-switching'));
+        });
+      }
+      document.querySelector('meta[name="theme-color"]')?.setAttribute('content', isDark ? '#071321' : '#e7f2fc');
       setResolvedTheme(isDark ? 'dark' : 'light');
       try {
         localStorage.setItem('tuitio_theme', preference);
@@ -31,7 +43,11 @@ export function useTheme(initial: ThemePreference = 'light') {
 
     apply();
     mq.addEventListener('change', apply);
-    return () => mq.removeEventListener('change', apply);
+    return () => {
+      mq.removeEventListener('change', apply);
+      cancelAnimationFrame(frame);
+      root.classList.remove('theme-switching');
+    };
   }, [preference]);
 
   return { preference, setPreference, resolvedTheme };
